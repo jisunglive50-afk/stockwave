@@ -1107,41 +1107,39 @@ app.get('/api/news/:symbol', async (req, res) => {
   const kwList = COMPANY_KEYWORDS[symUpper] || [symUpper];
 
   try {
-    const searchQueries = [
-      `${symUpper} stock`,
-      kwList[1] ? `${kwList[1]} stock` : `${symUpper} stock news`,
-    ];
-
-    const [pageNewsItems, ...searchResults] = await Promise.all([
+    // Fetch from RSS feeds only — works 100% on both localhost AND cloud (Render/AWS)
+    // yf.search is NOT used here because Yahoo Finance blocks cloud datacenter IPs
+    const companyName = kwList[1] || symUpper;
+    const [rssItems, gnItems] = await Promise.allSettled([
       fetchYahooFinanceNewsPage(symUpper),
-      ...searchQueries.map(q => yf.search(q, { newsCount: 30, quotesCount: 0 }, { validateResult: false }).catch(() => null)),
+      // Extra Google News RSS with company name for more coverage
+      fetch(`https://news.google.com/rss/search?q=${encodeURIComponent(companyName + ' stock earnings')}&hl=en-US&gl=US&ceid=US:en`, {
+        signal: AbortSignal.timeout(5000),
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+      }).then(async r => {
+        if (!r.ok) return [];
+        const xml = await r.text();
+        const items = [];
+        const re = /<item>[\s\S]*?<title>(.*?)<\/title>[\s\S]*?<link>(.*?)<\/link>[\s\S]*?<pubDate>(.*?)<\/pubDate>[\s\S]*?(?:<source[^>]*>(.*?)<\/source>)?[\s\S]*?<\/item>/gi;
+        let m;
+        while ((m = re.exec(xml)) !== null) {
+          const title = m[1].replace(/<!\[CDATA\[/gi,'').replace(/\]\]>/gi,'').replace(/&amp;/g,'&').trim();
+          const link = m[2].replace(/<!\[CDATA\[/gi,'').replace(/\]\]>/gi,'').trim();
+          const pub = m[3].trim();
+          const publisher = (m[4]||'').replace(/<!\[CDATA\[/gi,'').replace(/\]\]>/gi,'').trim() || 'Google News';
+          if (title && title.length > 5) items.push({ uuid: `gn2-${symUpper}-${items.length}`, title, summary: title, publisher, link, providerPublishTime: new Date(pub).getTime() || Date.now(), realImage: null });
+        }
+        return items;
+      }).catch(() => []),
     ]);
 
-    const yfSearchItems = [];
-    for (const sr of searchResults) {
-      if (sr?.news) {
-        for (const item of sr.news) {
-          const imgUrl = item.thumbnail?.resolutions?.find(r => r.width >= 300)?.url
-            || item.thumbnail?.resolutions?.[0]?.url
-            || item.mainImage?.originalUrl
-            || null;
-          yfSearchItems.push({
-            uuid: item.uuid || item.link,
-            title: item.title,
-            summary: item.summary || item.title,
-            publisher: item.publisher || 'Yahoo Finance',
-            link: item.link,
-            providerPublishTime: item.providerPublishTime,
-            realImage: imgUrl,
-            thumbnailObj: item.thumbnail,
-          });
-        }
-      }
-    }
+    const rssNews = rssItems.status === 'fulfilled' ? (rssItems.value || []) : [];
+    const gnNews  = gnItems.status  === 'fulfilled' ? (gnItems.value  || []) : [];
 
-    const combinedRaw = [...pageNewsItems, ...yfSearchItems];
+    const combinedRaw = [...rssNews, ...gnNews];
     const map = new Map();
     for (const item of combinedRaw) {
+
       if (item.title && !map.has(item.title.toLowerCase().trim())) {
         map.set(item.title.toLowerCase().trim(), item);
       }
@@ -1168,7 +1166,7 @@ app.get('/api/news/:symbol', async (req, res) => {
     console.log(`📰 Focused 3-month news for ${symUpper}: ${focusedArticles.length} articles`);
 
     const translated = await Promise.all(
-      focusedArticles.slice(0, 30).map(async (item, idx) => {
+      focusedArticles.slice(0, 50).map(async (item, idx) => {
         const titleTh = await translateToThai(item.title);
         const summaryEn = item.summary || item.title;
         const summaryTh = await translateToThai(summaryEn);
