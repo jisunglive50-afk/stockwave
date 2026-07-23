@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "StockWave Production Express API Server",
   "main": "index.js",
-  "type": "commonjs",
+  "type": "module",
   "scripts": {
     "start": "node index.js"
   },
@@ -12,6 +12,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "nodemailer": "^6.9.13",
-    "node-fetch": "^2.7.0"
+    "node-fetch": "^2.7.0",
+    "yahoo-finance2": "^2.13.0"
   }
 }

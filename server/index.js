@@ -268,8 +268,23 @@ async function checkPriceAlerts() {
 setInterval(checkPriceAlerts, 5 * 60 * 1000);
 setTimeout(checkPriceAlerts, 10_000);
 
-app.use(cors({ origin: ['http://localhost:5173', 'http://localhost:4173', 'http://localhost:5174'] }));
+app.use(cors());
 app.use(express.json());
+
+app.use((req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  next();
+});
+
+app.get('/', (req, res) => {
+  res.json({ ok: true, message: '🚀 StockWave Production API Server is Running Online!', timestamp: new Date().toISOString() });
+});
+
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', uptime: process.uptime() });
+});
 
 // High Quality Stock Cover Thumbnails Varied Pools per Ticker
 const STOCK_THUMBNAILS_POOLS = {
@@ -422,6 +437,128 @@ function rangeToPeriod1(range) {
   return d;
 }
 
+let yahooSession = { cookie: '', crumb: '', expiresAt: 0 };
+
+async function getYahooSession() {
+  if (yahooSession.crumb && Date.now() < yahooSession.expiresAt) {
+    return yahooSession;
+  }
+  try {
+    const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' };
+    const r1 = await fetch('https://fc.yahoo.com', { headers, signal: AbortSignal.timeout(4000) });
+    const cookie = r1.headers.get('set-cookie');
+    if (!cookie) throw new Error('No cookie');
+
+    const r2 = await fetch('https://query1.finance.yahoo.com/v1/test/getcrumb', {
+      headers: { ...headers, Cookie: cookie },
+      signal: AbortSignal.timeout(4000)
+    });
+    const crumb = await r2.text();
+    if (!crumb || crumb.includes('<html')) throw new Error('Invalid crumb');
+
+    yahooSession = {
+      cookie,
+      crumb,
+      expiresAt: Date.now() + 30 * 60 * 1000
+    };
+    return yahooSession;
+  } catch (e) {
+    console.warn('⚠️ Could not obtain Yahoo crumb:', e.message);
+    return { cookie: '', crumb: '', expiresAt: 0 };
+  }
+}
+
+async function fetchBatchQuotesDirect(symbols) {
+  if (!symbols || symbols.length === 0) return [];
+  const syms = symbols.join(',').toUpperCase();
+  const session = await getYahooSession();
+  
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  };
+  if (session.cookie) headers['Cookie'] = session.cookie;
+
+  let url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(syms)}`;
+  if (session.crumb) url += `&crumb=${encodeURIComponent(session.crumb)}`;
+
+  try {
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(6000) });
+    if (res.ok) {
+      const data = await res.json();
+      const list = data?.quoteResponse?.result || [];
+      if (list.length > 0) {
+        return list.map(q => ({
+          symbol: q.symbol,
+          shortName: q.shortName || q.longName || q.symbol,
+          longName: q.longName || q.shortName || q.symbol,
+          regularMarketPrice: +(q.regularMarketPrice || 0).toFixed(2),
+          regularMarketChange: +(q.regularMarketChange || 0).toFixed(2),
+          regularMarketChangePercent: +(q.regularMarketChangePercent || 0).toFixed(2),
+          regularMarketPreviousClose: +(q.regularMarketPreviousClose || q.regularMarketPrice || 0).toFixed(2),
+          regularMarketDayHigh: +(q.regularMarketDayHigh || q.regularMarketPrice * 1.01).toFixed(2),
+          regularMarketDayLow: +(q.regularMarketDayLow || q.regularMarketPrice * 0.99).toFixed(2),
+          regularMarketVolume: q.regularMarketVolume || 10000000,
+          fiftyTwoWeekHigh: q.fiftyTwoWeekHigh || null,
+          fiftyTwoWeekLow: q.fiftyTwoWeekLow || null,
+          marketCap: q.marketCap || null,
+        }));
+      }
+    }
+  } catch (e) {
+    console.warn(`⚠️ Batch quote fetch error for ${syms}:`, e.message);
+  }
+
+  return Promise.all(symbols.map(fetchSingleQuoteDirect)).then(res => res.filter(Boolean));
+}
+
+async function fetchSingleQuoteDirect(symbol) {
+  const sym = symbol.toUpperCase();
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=1d&interval=1d`;
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(6000),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+      }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const meta = data?.chart?.result?.[0]?.meta;
+      if (meta && meta.regularMarketPrice) {
+        const prevClose = meta.chartPreviousClose || meta.previousClose || meta.regularMarketPrice;
+        const price = meta.regularMarketPrice;
+        const change = price - prevClose;
+        const changePct = prevClose > 0 ? (change / prevClose) * 100 : 0;
+        return {
+          symbol: sym,
+          shortName: meta.shortName || meta.longName || sym,
+          longName: meta.longName || meta.shortName || sym,
+          regularMarketPrice: +price.toFixed(2),
+          regularMarketChange: +change.toFixed(2),
+          regularMarketChangePercent: +changePct.toFixed(2),
+          regularMarketPreviousClose: +prevClose.toFixed(2),
+          regularMarketDayHigh: meta.regularMarketDayHigh ? +meta.regularMarketDayHigh.toFixed(2) : +(price * 1.01).toFixed(2),
+          regularMarketDayLow: meta.regularMarketDayLow ? +meta.regularMarketDayLow.toFixed(2) : +(price * 0.99).toFixed(2),
+          regularMarketVolume: meta.regularMarketVolume || 10000000,
+          fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh || null,
+          fiftyTwoWeekLow: meta.fiftyTwoWeekLow || null,
+          marketCap: meta.marketCap || null,
+        };
+      }
+    }
+  } catch (e) {
+    console.warn(`⚠️ Direct quote fetch error for ${sym}:`, e.message);
+  }
+
+  try {
+    const q = await yf.quote(sym, {}, { validateResult: false });
+    if (q && q.regularMarketPrice) return q;
+  } catch {}
+
+  return null;
+}
+
 // ========== Routes ==========
 
 /** GET /api/quotes */
@@ -430,10 +567,8 @@ app.get('/api/quotes', async (req, res) => {
     .split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
   if (!symbols.length) return res.json([]);
   try {
-    const results = await Promise.allSettled(
-      symbols.map(sym => yf.quote(sym, {}, { validateResult: false }))
-    );
-    res.json(results.filter(r => r.status === 'fulfilled' && r.value).map(r => r.value));
+    const results = await fetchBatchQuotesDirect(symbols);
+    res.json(results);
   } catch { res.json([]); }
 });
 
@@ -821,164 +956,85 @@ async function fetchYahooFinanceNewsPage(symbol) {
   const sym = (symbol || '').toUpperCase();
   const items = [];
 
-  // Method 1: Yahoo Finance v2 Search API (most reliable with images)
+  // Run v2 API, Yahoo RSS, and Google News RSS in parallel for maximum speed & fresh news
   try {
-    const apiUrl = `https://query2.finance.yahoo.com/v2/finance/news?symbols=${sym}&count=25&lang=en-US&region=US`;
-    const r = await fetch(apiUrl, {
-      signal: AbortSignal.timeout(8000),
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json',
-        'Referer': 'https://finance.yahoo.com',
-      },
-    });
-    if (r.ok) {
-      const data = await r.json();
-      const stories = data?.news || data?.items || data?.data?.stream || [];
-      for (const story of stories) {
-        const title = story.title || story.headline || '';
-        if (!title || title.length < 5) continue;
-        const imgUrl = story.thumbnail?.resolutions?.find(r => r.width >= 300)?.url
-          || story.thumbnail?.resolutions?.[0]?.url
-          || story.image?.url || story.img || null;
-        items.push({
-          uuid: story.uuid || story.id || `yfv2-${sym}-${items.length}`,
-          title,
-          summary: story.summary || story.description || title,
-          publisher: story.publisher || story.source?.name || 'Yahoo Finance',
-          link: story.link || story.url || `https://finance.yahoo.com/news/${story.uuid}`,
-          providerPublishTime: story.providerPublishTime || story.pubTime || story.published || Date.now(),
-          realImage: imgUrl,
-        });
-      }
-      console.log(`📰 YF v2 API for ${sym}: ${items.length} articles`);
-    }
-  } catch(e) {
-    console.warn(`⚠️ YF v2 API error for ${sym}:`, e.message);
-  }
+    const [resV2, resYfRss, resGnRss] = await Promise.allSettled([
+      fetch(`https://query2.finance.yahoo.com/v2/finance/news?symbols=${sym}&count=25&lang=en-US&region=US`, {
+        signal: AbortSignal.timeout(4000),
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': 'application/json' },
+      }),
+      fetch(`https://feeds.finance.yahoo.com/rss/2.0/headline?s=${sym}&region=US&lang=en-US`, {
+        signal: AbortSignal.timeout(4000),
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+      }),
+      fetch(`https://news.google.com/rss/search?q=${sym}+stock+when:90d&hl=en-US&gl=US&ceid=US:en`, {
+        signal: AbortSignal.timeout(4000),
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+      })
+    ]);
 
-  // Method 2: Yahoo Finance quote page HTML scraping (gets real thumbnails)
-  if (items.length < 5) {
-    try {
-      const pageUrl = `https://finance.yahoo.com/quote/${sym}/news/`;
-      const r = await fetch(pageUrl, {
-        signal: AbortSignal.timeout(10000),
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml',
-          'Accept-Language': 'en-US,en;q=0.9',
-          'Cache-Control': 'no-cache',
-          'Referer': 'https://finance.yahoo.com',
-        },
-      });
-      if (r.ok) {
-        const html = await r.text();
-
-        // Extract JSON data embedded in page (Yahoo Finance puts data in __NEXT_DATA__ or window.YAHOO.context)
-        const nextDataMatch = html.match(/"streamItems":\s*(\[\{.*?\}\])/s)
-          || html.match(/__NEXT_DATA__[^>]*>([\s\S]*?)<\/script>/);
-        
-        if (nextDataMatch) {
-          try {
-            const jsonStr = nextDataMatch[1].startsWith('[') ? nextDataMatch[1] : JSON.parse(nextDataMatch[1]);
-            const parsed = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
-            const streamItems = Array.isArray(parsed) ? parsed : (parsed?.props?.pageProps?.state?.streamItems || []);
-            for (const item of streamItems.slice(0, 20)) {
-              const content = item?.content || item;
-              const title = content?.title || content?.headline || '';
-              if (!title || title.length < 5) continue;
-              const imgUrl = content?.thumbnail?.resolutions?.find(r => r.width >= 300)?.url
-                || content?.thumbnail?.resolutions?.[0]?.url || null;
-              items.push({
-                uuid: content?.uuid || `yfhtml-${sym}-${items.length}`,
-                title,
-                summary: content?.summary || content?.description || title,
-                publisher: content?.provider?.displayName || content?.publisher || 'Yahoo Finance',
-                link: content?.canonicalUrl?.url || content?.link || `https://finance.yahoo.com`,
-                providerPublishTime: content?.pubDate || content?.providerPublishTime || Date.now(),
-                realImage: imgUrl,
-              });
-            }
-          } catch {}
-        }
-
-        // Fallback: regex extract article headlines + images from HTML
-        if (items.length < 3) {
-          const articleBlocks = [...html.matchAll(/<li[^>]*class="[^"]*stream-item[^"]*"[^>]*>([\s\S]*?)<\/li>/gi)];
-          for (const block of articleBlocks.slice(0, 20)) {
-            const blockHtml = block[1];
-            const titleM = blockHtml.match(/<h3[^>]*>([^<]+)<\/h3>/) || blockHtml.match(/<h2[^>]*>([^<]+)<\/h2>/);
-            const imgM = blockHtml.match(/<img[^>]+src=["'](https?:[^"']+)["']/) || blockHtml.match(/data-src=["'](https?:[^"']+)["']/);
-            const linkM = blockHtml.match(/href=["'](https:\/\/finance\.yahoo\.com[^"']+)["']/);
-            const pubM = blockHtml.match(/<time[^>]+datetime=["']([^"']+)["']/);
-            const pubNameM = blockHtml.match(/<span[^>]*class="[^"]*publisher[^"]*"[^>]*>([^<]+)<\/span>/);
-
-            const title = titleM?.[1]?.trim();
-            if (!title || title.length < 5 || items.some(x => x.title === title)) continue;
-
-            items.push({
-              uuid: `yfhtml-${sym}-${items.length}`,
-              title,
-              summary: title,
-              publisher: pubNameM?.[1]?.trim() || 'Yahoo Finance',
-              link: linkM?.[1] || `https://finance.yahoo.com/quote/${sym}/news/`,
-              providerPublishTime: pubM?.[1] ? new Date(pubM[1]).getTime() : Date.now(),
-              realImage: imgM?.[1] || null,
-            });
-          }
-          console.log(`📰 YF HTML scrape for ${sym}: ${items.length} articles`);
-        }
-      }
-    } catch(e) {
-      console.warn(`⚠️ YF page scrape error for ${sym}:`, e.message);
-    }
-  }
-
-  // Method 3: Yahoo Finance RSS feed as additional source
-  try {
-    const yfUrl = `https://feeds.finance.yahoo.com/rss/2.0/headline?s=${sym}&region=US&lang=en-US`;
-    const res = await fetch(yfUrl, { signal: AbortSignal.timeout(6000), headers: { 'User-Agent': 'Mozilla/5.0' } });
-    if (res.ok) {
-      const xml = await res.text();
-      const itemRegex = /<item>[\s\S]*?<title>(.*?)<\/title>[\s\S]*?<link>(.*?)<\/link>[\s\S]*?<pubDate>(.*?)<\/pubDate>(?:[\s\S]*?<description>(.*?)<\/description>)?[\s\S]*?<\/item>/gi;
-      let match;
-      while ((match = itemRegex.exec(xml)) !== null) {
-        let rawTitle = match[1].replace(/<![\s\S]*?\]\]>/gi, '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').trim();
-        let rawLink = match[2].replace(/<![\s\S]*?\]\]>/gi, '').trim();
-        let pubDateStr = match[3].trim();
-        let rawDesc = (match[4] || '').replace(/<![\s\S]*?\]\]>/gi, '').replace(/<[^>]+>/g, '').trim();
-
-        if (rawTitle && rawTitle.length > 5 && !items.some(x => x.title === rawTitle)) {
+    // Parse v2 API
+    if (resV2.status === 'fulfilled' && resV2.value.ok) {
+      try {
+        const data = await resV2.value.json();
+        const stories = data?.news || data?.items || data?.data?.stream || [];
+        for (const story of stories) {
+          const title = story.title || story.headline || '';
+          if (!title || title.length < 5) continue;
+          const imgUrl = story.thumbnail?.resolutions?.find(r => r.width >= 300)?.url
+            || story.thumbnail?.resolutions?.[0]?.url
+            || story.image?.url || story.img || null;
           items.push({
-            uuid: `yf-rss-${sym}-${items.length}`,
-            title: rawTitle,
-            summary: rawDesc.slice(0, 400) || rawTitle,
-            publisher: 'Yahoo Finance',
-            link: rawLink,
-            providerPublishTime: new Date(pubDateStr).getTime() || Date.now(),
-            realImage: null,
+            uuid: story.uuid || story.id || `yfv2-${sym}-${items.length}`,
+            title,
+            summary: story.summary || story.description || title,
+            publisher: story.publisher || story.source?.name || 'Yahoo Finance',
+            link: story.link || story.url || `https://finance.yahoo.com/news/${story.uuid}`,
+            providerPublishTime: story.providerPublishTime || story.pubTime || story.published || Date.now(),
+            realImage: imgUrl,
           });
         }
-      }
+      } catch {}
     }
-  } catch (e) {
-    console.warn(`⚠️ YF RSS error for ${sym}:`, e.message);
-  }
 
-  // Method 4: Google News RSS as last resort
-  if (items.length < 5) {
-    try {
-      const gnUrl = `https://news.google.com/rss/search?q=${sym}+stock+when:7d&hl=en-US&gl=US&ceid=US:en`;
-      const res = await fetch(gnUrl, { signal: AbortSignal.timeout(6000), headers: { 'User-Agent': 'Mozilla/5.0' } });
-      if (res.ok) {
-        const xml = await res.text();
+    // Parse Yahoo RSS
+    if (resYfRss.status === 'fulfilled' && resYfRss.value.ok) {
+      try {
+        const xml = await resYfRss.value.text();
+        const itemRegex = /<item>[\s\S]*?<title>(.*?)<\/title>[\s\S]*?<link>(.*?)<\/link>[\s\S]*?<pubDate>(.*?)<\/pubDate>(?:[\s\S]*?<description>(.*?)<\/description>)?[\s\S]*?<\/item>/gi;
+        let match;
+        while ((match = itemRegex.exec(xml)) !== null) {
+          let rawTitle = match[1].replace(/<!\[CDATA\[/gi, '').replace(/\]\]>/gi, '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').trim();
+          let rawLink = match[2].replace(/<!\[CDATA\[/gi, '').replace(/\]\]>/gi, '').trim();
+          let pubDateStr = match[3].trim();
+          let rawDesc = (match[4] || '').replace(/<!\[CDATA\[/gi, '').replace(/\]\]>/gi, '').replace(/<[^>]+>/g, '').trim();
+
+          if (rawTitle && rawTitle.length > 5 && !items.some(x => x.title === rawTitle)) {
+            items.push({
+              uuid: `yf-rss-${sym}-${items.length}`,
+              title: rawTitle,
+              summary: rawDesc.slice(0, 400) || rawTitle,
+              publisher: 'Yahoo Finance',
+              link: rawLink,
+              providerPublishTime: new Date(pubDateStr).getTime() || Date.now(),
+              realImage: null,
+            });
+          }
+        }
+      } catch {}
+    }
+
+    // Parse Google News RSS
+    if (resGnRss.status === 'fulfilled' && resGnRss.value.ok) {
+      try {
+        const xml = await resGnRss.value.text();
         const itemRegex = /<item>[\s\S]*?<title>(.*?)<\/title>[\s\S]*?<link>(.*?)<\/link>[\s\S]*?<pubDate>(.*?)<\/pubDate>[\s\S]*?(?:<source[^>]*>(.*?)<\/source>)?[\s\S]*?<\/item>/gi;
         let match;
         while ((match = itemRegex.exec(xml)) !== null) {
-          let rawTitle = match[1].replace(/<![\s\S]*?\]\]>/gi, '').replace(/&amp;/g, '&').trim();
-          let rawLink = match[2].replace(/<![\s\S]*?\]\]>/gi, '').trim();
+          let rawTitle = match[1].replace(/<!\[CDATA\[/gi, '').replace(/\]\]>/gi, '').replace(/&amp;/g, '&').trim();
+          let rawLink = match[2].replace(/<!\[CDATA\[/gi, '').replace(/\]\]>/gi, '').trim();
           let pubDateStr = match[3].trim();
-          let publisher = (match[4] || '').replace(/<![\s\S]*?\]\]>/gi, '').trim() || 'Google News';
+          let publisher = (match[4] || '').replace(/<!\[CDATA\[/gi, '').replace(/\]\]>/gi, '').trim() || 'Google News';
 
           if (rawTitle && rawTitle.length > 5 && !items.some(x => x.title === rawTitle)) {
             items.push({
@@ -992,33 +1048,73 @@ async function fetchYahooFinanceNewsPage(symbol) {
             });
           }
         }
-      }
-    } catch (e) {
-      console.warn(`⚠️ Google News error for ${sym}:`, e.message);
+      } catch {}
     }
+  } catch(e) {
+    console.warn(`⚠️ High speed news fetch error for ${sym}:`, e.message);
   }
 
   console.log(`📰 Total news for ${sym}: ${items.length} articles`);
   return items;
 }
 
+const COMPANY_KEYWORDS = {
+  AAPL: ['AAPL', 'Apple'],
+  NVDA: ['NVDA', 'Nvidia', 'NVIDIA'],
+  TSLA: ['TSLA', 'Tesla'],
+  MSFT: ['MSFT', 'Microsoft'],
+  GOOGL: ['GOOGL', 'GOOG', 'Google', 'Alphabet'],
+  GOOG: ['GOOGL', 'GOOG', 'Google', 'Alphabet'],
+  AMZN: ['AMZN', 'Amazon'],
+  META: ['META', 'Facebook', 'Instagram'],
+  PLTR: ['PLTR', 'Palantir'],
+  AMD: ['AMD', 'Advanced Micro Devices'],
+  INTC: ['INTC', 'Intel'],
+  NFLX: ['NFLX', 'Netflix'],
+  DIS: ['DIS', 'Disney'],
+  COIN: ['COIN', 'Coinbase'],
+  ARM: ['ARM', 'Arm Holdings'],
+  SMCI: ['SMCI', 'Super Micro'],
+  RKLB: ['RKLB', 'Rocket Lab'],
+  SOFI: ['SOFI', 'SoFi'],
+  MSTR: ['MSTR', 'MicroStrategy'],
+  MU: ['MU', 'Micron'],
+  CRWD: ['CRWD', 'CrowdStrike'],
+  SNOW: ['SNOW', 'Snowflake'],
+  UBER: ['UBER', 'Uber'],
+  ABNB: ['ABNB', 'Airbnb'],
+  SHOP: ['SHOP', 'Shopify'],
+  AVGO: ['AVGO', 'Broadcom'],
+  QCOM: ['QCOM', 'Qualcomm'],
+  TSM: ['TSM', 'Taiwan Semiconductor', 'TSMC'],
+  COST: ['COST', 'Costco'],
+  WMT: ['WMT', 'Walmart'],
+  NKE: ['NKE', 'Nike'],
+  PYPL: ['PYPL', 'PayPal'],
+  PANW: ['PANW', 'Palo Alto Networks'],
+  DELL: ['DELL', 'Dell'],
+  SMR: ['SMR', 'NuScale'],
+  MARA: ['MARA', 'Marathon Digital'],
+  RIOT: ['RIOT', 'Riot Platforms'],
+  HOOD: ['HOOD', 'Robinhood'],
+  BA: ['BA', 'Boeing']
+};
+
 /** GET /api/news/:symbol — Multi-Source Yahoo Finance News Aggregator (ALL articles within 3 months) */
 app.get('/api/news/:symbol', async (req, res) => {
   const { symbol } = req.params;
   const symUpper = (symbol || '').toUpperCase();
+  const kwList = COMPANY_KEYWORDS[symUpper] || [symUpper];
 
   try {
     const searchQueries = [
-      symUpper,
       `${symUpper} stock`,
-      `${symUpper} news`,
-      `${symUpper} earnings`,
-      `${symUpper} Wall Street`,
+      kwList[1] ? `${kwList[1]} stock` : `${symUpper} stock news`,
     ];
 
     const [pageNewsItems, ...searchResults] = await Promise.all([
       fetchYahooFinanceNewsPage(symUpper),
-      ...searchQueries.map(q => yf.search(q, { newsCount: 40, quotesCount: 0 }, { validateResult: false }).catch(() => null)),
+      ...searchQueries.map(q => yf.search(q, { newsCount: 30, quotesCount: 0 }, { validateResult: false }).catch(() => null)),
     ]);
 
     const yfSearchItems = [];
@@ -1043,7 +1139,7 @@ app.get('/api/news/:symbol', async (req, res) => {
       }
     }
 
-    const combinedRaw = [...yfSearchItems, ...pageNewsItems];
+    const combinedRaw = [...pageNewsItems, ...yfSearchItems];
     const map = new Map();
     for (const item of combinedRaw) {
       if (item.title && !map.has(item.title.toLowerCase().trim())) {
@@ -1055,17 +1151,24 @@ app.get('/api/news/:symbol', async (req, res) => {
     const now = Date.now();
     const THREE_MONTHS_MS = 90 * 24 * 60 * 60 * 1000;
 
-    // Filter out articles older than 3 months (90 days)
-    const valid3MonthArticles = uniqueNews.filter(item => {
-      if (!item.providerPublishTime) return true;
-      const pubTime = new Date(item.providerPublishTime).getTime();
-      return (now - pubTime) <= THREE_MONTHS_MS;
+    // Strict filter: MUST be within 90 days AND MUST mention symbol/company name
+    const focusedArticles = uniqueNews.filter(item => {
+      // 1. Time check (within 90 days)
+      if (item.providerPublishTime) {
+        const pubTime = new Date(item.providerPublishTime).getTime();
+        if (!isNaN(pubTime) && (now - pubTime) > THREE_MONTHS_MS) return false;
+      }
+
+      // 2. Strict keyword check (must be truly about this stock)
+      const fullText = (item.title + ' ' + (item.summary || '') + ' ' + (item.link || '')).toLowerCase();
+      const isMatch = kwList.some(kw => fullText.includes(kw.toLowerCase()));
+      return isMatch;
     });
 
-    console.log(`📰 Total 3-month news for ${symUpper}: ${valid3MonthArticles.length} articles`);
+    console.log(`📰 Focused 3-month news for ${symUpper}: ${focusedArticles.length} articles`);
 
     const translated = await Promise.all(
-      valid3MonthArticles.map(async (item, idx) => {
+      focusedArticles.slice(0, 30).map(async (item, idx) => {
         const titleTh = await translateToThai(item.title);
         const summaryEn = item.summary || item.title;
         const summaryTh = await translateToThai(summaryEn);
