@@ -1,0 +1,17 @@
+{
+  "name": "stockwave-backend",
+  "version": "1.0.0",
+  "description": "StockWave Production Express API Server",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "nodemailer": "^6.9.13",
+    "node-fetch": "^2.7.0"
+  }
+}

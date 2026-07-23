@@ -1,0 +1,65 @@
+{
+  "0645342236": {
+    "MU": {
+      "targetPrice": 936.15,
+      "direction": "below",
+      "channel": "sms",
+      "phone": "0645342236",
+      "chatId": null,
+      "createdAt": 1784813291609,
+      "firedAt": null
+    },
+    "AAPL": {
+      "targetPrice": 319.36,
+      "direction": "below",
+      "channel": "email",
+      "phone": "0645342236",
+      "chatId": null,
+      "createdAt": 1784814429284,
+      "firedAt": null
+    },
+    "PLTR": {
+      "targetPrice": 121.51,
+      "direction": "below",
+      "channel": "email",
+      "phone": "0645342236",
+      "chatId": null,
+      "createdAt": 1784814363749,
+      "firedAt": 1784822762991
+    }
+  },
+  "sangsuragul.50@gmail.com": {
+    "AAPL": {
+      "targetPrice": 318.61,
+      "direction": "below",
+      "channel": "email",
+      "phone": "0645342236",
+      "chatId": null,
+      "email": "sangsuragul.50@gmail.com",
+      "createdAt": 1784814755094,
+      "firedAt": null
+    },
+    "PLTR": {
+      "targetPrice": 121.85,
+      "direction": "below",
+      "channel": "email",
+      "phone": "0645342236",
+      "chatId": null,
+      "email": "sangsuragul.50@gmail.com",
+      "createdAt": 1784814769374,
+      "firedAt": 1784827370840
+    }
+  },
+  "jisungliveline@gmail.com": {
+    "PLTR": {
+      "targetPrice": 121.53,
+      "direction": "below",
+      "channel": "email",
+      "phone": "0645342236",
+      "chatId": null,
+      "email": "jisungliveline@gmail.com",
+      "createdAt": 1784815911983,
+      "firedAt": 1784825549878
+    }
+  }
+}
