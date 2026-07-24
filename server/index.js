@@ -545,10 +545,16 @@ async function fetchBatchQuotesDirect(symbols) {
           regularMarketPreviousClose: +(q.regularMarketPreviousClose || q.regularMarketPrice || 0).toFixed(2),
           regularMarketDayHigh: +(q.regularMarketDayHigh || q.regularMarketPrice * 1.01).toFixed(2),
           regularMarketDayLow: +(q.regularMarketDayLow || q.regularMarketPrice * 0.99).toFixed(2),
-          regularMarketVolume: q.regularMarketVolume || 10000000,
           fiftyTwoWeekHigh: q.fiftyTwoWeekHigh || null,
           fiftyTwoWeekLow: q.fiftyTwoWeekLow || null,
           marketCap: q.marketCap || null,
+          preMarketPrice: q.preMarketPrice ? +q.preMarketPrice.toFixed(2) : null,
+          preMarketChange: q.preMarketChange ? +q.preMarketChange.toFixed(2) : null,
+          preMarketChangePercent: q.preMarketChangePercent ? +q.preMarketChangePercent.toFixed(2) : null,
+          postMarketPrice: q.postMarketPrice ? +q.postMarketPrice.toFixed(2) : null,
+          postMarketChange: q.postMarketChange ? +q.postMarketChange.toFixed(2) : null,
+          postMarketChangePercent: q.postMarketChangePercent ? +q.postMarketChangePercent.toFixed(2) : null,
+          marketState: q.marketState || 'REGULAR',
         }));
       }
     }
@@ -588,10 +594,16 @@ async function fetchSingleQuoteDirect(symbol) {
           regularMarketPreviousClose: +prevClose.toFixed(2),
           regularMarketDayHigh: meta.regularMarketDayHigh ? +meta.regularMarketDayHigh.toFixed(2) : +(price * 1.01).toFixed(2),
           regularMarketDayLow: meta.regularMarketDayLow ? +meta.regularMarketDayLow.toFixed(2) : +(price * 0.99).toFixed(2),
-          regularMarketVolume: meta.regularMarketVolume || 10000000,
           fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh || null,
           fiftyTwoWeekLow: meta.fiftyTwoWeekLow || null,
           marketCap: meta.marketCap || null,
+          preMarketPrice: meta.preMarketPrice ? +meta.preMarketPrice.toFixed(2) : null,
+          preMarketChange: meta.preMarketChange ? +meta.preMarketChange.toFixed(2) : null,
+          preMarketChangePercent: meta.preMarketChangePercent ? +meta.preMarketChangePercent.toFixed(2) : null,
+          postMarketPrice: meta.postMarketPrice ? +meta.postMarketPrice.toFixed(2) : null,
+          postMarketChange: meta.postMarketChange ? +meta.postMarketChange.toFixed(2) : null,
+          postMarketChangePercent: meta.postMarketChangePercent ? +meta.postMarketChangePercent.toFixed(2) : null,
+          marketState: meta.marketState || 'REGULAR',
         };
       }
     }
@@ -620,6 +632,34 @@ app.get('/api/quotes', async (req, res) => {
   } catch { res.json([]); }
 });
 
+function generateFallbackChartDataServer(basePrice = 300, range = '1mo') {
+  const count = range === '1mo' ? 30 : range === '6mo' ? 90 : range === 'ytd' ? 180 : range === '1y' ? 252 : 260;
+  const now = Date.now();
+  const rawList = [];
+  for (let i = 0; i < count; i++) {
+    const d = new Date(now - (count - 1 - i) * 86400000);
+    if (d.getDay() === 0 || d.getDay() === 6) continue;
+    const distFromEnd = (count - 1 - i) / count;
+    const wave = Math.sin(i * 0.3) * 0.04 + Math.cos(i * 0.15) * 0.03;
+    const factor = 1 - (distFromEnd * 0.08) + (wave * distFromEnd);
+    const closeVal = +(basePrice * factor).toFixed(2);
+    const openVal = +(closeVal * (0.997 + (Math.random() - 0.5) * 0.006)).toFixed(2);
+    const highVal = +(Math.max(closeVal, openVal) * (1.003 + Math.random() * 0.008)).toFixed(2);
+    const lowVal = +(Math.min(closeVal, openVal) * (0.996 - Math.random() * 0.008)).toFixed(2);
+    rawList.push({
+      time: d.toLocaleDateString('th-TH', { month: 'short', day: 'numeric' }),
+      dateStr: d.toLocaleDateString('th-TH', { day: 'numeric', month: 'short' }),
+      timestamp: d.getTime(),
+      close: closeVal, open: openVal, high: highVal, low: lowVal,
+      volume: Math.floor(1000000 + Math.random() * 5000000),
+    });
+  }
+  if (rawList.length > 0) {
+    rawList[rawList.length - 1].close = +basePrice.toFixed(2);
+  }
+  return rawList;
+}
+
 /** GET /api/chart/:symbol */
 app.get('/api/chart/:symbol', async (req, res) => {
   const { symbol } = req.params;
@@ -628,58 +668,83 @@ app.get('/api/chart/:symbol', async (req, res) => {
   const interval = req.query.interval || '1d';
   const safeInterval = ['5m','30m','60m'].includes(interval) ? '1d' : interval;
 
-  let result = null;
+  let data = [];
+
+  // Try 1: Direct HTTP fetch from Yahoo v8 chart API (reliable, never blocked on Cloud IP)
   try {
-    result = await yf.chart(sym, {
-      period1: rangeToPeriod1(range),
-      interval: safeInterval,
-    }, { validateResult: false });
-  } catch(e) {
-    console.warn(`⚠️ chart ${sym} error:`, e.message);
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=${range}&interval=${safeInterval}`;
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+      },
+      signal: AbortSignal.timeout(6000),
+    });
+    if (response.ok) {
+      const json = await response.json();
+      const result = json?.chart?.result?.[0];
+      if (result && result.timestamp && result.indicators?.quote?.[0]) {
+        const timestamps = result.timestamp;
+        const q = result.indicators.quote[0];
+        const opens = q.open || [];
+        const highs = q.high || [];
+        const lows = q.low || [];
+        const closes = q.close || [];
+        const volumes = q.volume || [];
+
+        for (let i = 0; i < timestamps.length; i++) {
+          const c = closes[i];
+          if (c == null || isNaN(c)) continue;
+          const d = new Date(timestamps[i] * 1000);
+          data.push({
+            time: d.toLocaleDateString('th-TH', { month: 'short', day: 'numeric' }),
+            dateStr: d.toLocaleDateString('th-TH', { day: 'numeric', month: 'short' }),
+            timestamp: d.getTime(),
+            close: +c.toFixed(2),
+            open: opens[i] != null ? +opens[i].toFixed(2) : +c.toFixed(2),
+            high: highs[i] != null ? +highs[i].toFixed(2) : +c.toFixed(2),
+            low: lows[i] != null ? +lows[i].toFixed(2) : +c.toFixed(2),
+            volume: volumes[i] || 0,
+          });
+        }
+      }
+    }
+  } catch (e) {
+    console.warn(`⚠️ Direct chart fetch ${sym} error:`, e.message);
   }
 
-  const quotes = result?.quotes || [];
-  let data = quotes.map(q => ({
-    time: new Date(q.date).toLocaleDateString('th-TH', { month: 'short', day: 'numeric' }),
-    dateStr: new Date(q.date).toLocaleDateString('th-TH', { day: 'numeric', month: 'short' }),
-    timestamp: new Date(q.date).getTime(),
-    close:  q.close  != null ? +q.close.toFixed(2)  : null,
-    open:   q.open   != null ? +q.open.toFixed(2)   : null,
-    high:   q.high   != null ? +q.high.toFixed(2)   : null,
-    low:    q.low    != null ? +q.low.toFixed(2)    : null,
-    volume: q.volume || 0,
-  })).filter(d => d.close !== null);
-
-  console.log(`📊 chart ${sym} range=${range}: ${data.length} points`);
-
-  // Fallback if Yahoo Finance API returns empty quotes array
+  // Try 2: Fallback to yf.chart if direct fetch failed
   if (data.length === 0) {
-    let basePrice = 200;
     try {
-      const currentQuote = await yf.quote(sym, {}, { validateResult: false });
-      basePrice = currentQuote?.regularMarketPrice || 200;
+      const result = await yf.chart(sym, {
+        period1: rangeToPeriod1(range),
+        interval: safeInterval,
+      }, { validateResult: false });
+      const quotes = result?.quotes || [];
+      data = quotes.map(q => ({
+        time: new Date(q.date).toLocaleDateString('th-TH', { month: 'short', day: 'numeric' }),
+        dateStr: new Date(q.date).toLocaleDateString('th-TH', { day: 'numeric', month: 'short' }),
+        timestamp: new Date(q.date).getTime(),
+        close: q.close != null ? +q.close.toFixed(2) : null,
+        open: q.open != null ? +q.open.toFixed(2) : null,
+        high: q.high != null ? +q.high.toFixed(2) : null,
+        low: q.low != null ? +q.low.toFixed(2) : null,
+        volume: q.volume || 0,
+      })).filter(d => d.close !== null);
     } catch {}
-    const count = range === '1mo' ? 30 : range === '6mo' ? 90 : range === 'ytd' ? 180 : range === '1y' ? 252 : 260;
-    const now = Date.now();
-    
-    data = Array.from({ length: count }).map((_, i) => {
-      const d = new Date(now - (count - 1 - i) * 86400000);
-      if (d.getDay() === 0 || d.getDay() === 6) return null; // skip weekends
-      const noise = (Math.sin(i * 0.4) * 0.05 + Math.cos(i * 0.2) * 0.03 + (Math.random() - 0.5) * 0.02);
-      const trend = (i / count) * 0.15;
-      const closeVal = +(basePrice * (0.88 + trend + noise)).toFixed(2);
-      const openVal = +(closeVal * (0.997 + (Math.random() - 0.5) * 0.006)).toFixed(2);
-      const highVal = +(Math.max(closeVal, openVal) * (1.002 + Math.random() * 0.01)).toFixed(2);
-      const lowVal = +(Math.min(closeVal, openVal) * (0.995 - Math.random() * 0.01)).toFixed(2);
-      return {
-        time: d.toLocaleDateString('th-TH', { month: 'short', day: 'numeric' }),
-        dateStr: d.toLocaleDateString('th-TH', { day: 'numeric', month: 'short' }),
-        timestamp: d.getTime(),
-        close: closeVal, open: openVal, high: highVal, low: lowVal,
-        volume: Math.floor(500000 + Math.random() * 2000000),
-      };
-    }).filter(Boolean);
-    console.log(`⚡ chart ${sym}: using fallback data (${data.length} points)`);
+  }
+
+  // Fallback 3: Generate synthetic fallback data anchored to current price
+  if (data.length === 0) {
+    let basePrice = 300;
+    try {
+      const currentQuote = await fetchSingleQuoteDirect(sym);
+      basePrice = currentQuote?.regularMarketPrice || 300;
+    } catch {}
+    data = generateFallbackChartDataServer(basePrice, range);
+    console.log(`⚡ chart ${sym}: using fallback data (${data.length} points, ending at $${basePrice})`);
+  } else {
+    console.log(`📊 chart ${sym} range=${range}: ${data.length} points (last close: $${data[data.length - 1]?.close})`);
   }
 
   res.json(data);
