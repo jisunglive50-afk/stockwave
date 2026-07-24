@@ -338,9 +338,9 @@ const STOCK_THUMBNAILS_POOLS = {
     'https://images.unsplash.com/photo-1622979135225-d2ba269bc1bd?auto=format&fit=crop&w=600&q=80',
   ],
   DEFAULT: [
-    'https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?auto=format&fit=crop&w=600&q=80',
-    'https://images.unsplash.com/photo-1590283603385-17ffb3a7f29f?auto=format&fit=crop&w=600&q=80',
-    'https://images.unsplash.com/photo-1642543492481-44e81e3914a7?auto=format&fit=crop&w=600&q=80',
+    'https://images.unsplash.com/photo-1590283603385-17ffb3a7f29f?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1642543492481-44e81e3914a7?auto=format&fit=crop&w=800&q=80',
+    'https://images.unsplash.com/photo-1535320903710-d993d3d77d29?auto=format&fit=crop&w=800&q=80',
   ]
 };
 
@@ -373,8 +373,7 @@ function extractThumbnail(item, symbol = 'DEFAULT', index = 0) {
 
   const sym = symbol?.toUpperCase() || 'DEFAULT';
   const pool = STOCK_THUMBNAILS_POOLS[sym] || STOCK_THUMBNAILS_POOLS.DEFAULT;
-  const hash = item.title ? Math.abs(item.title.length + index * 7) : index;
-  return pool[hash % pool.length];
+  return pool[Math.abs(index) % pool.length];
 }
 
 
@@ -868,12 +867,15 @@ function formatNewsDate(pubTime) {
 
   if (isNaN(date.getTime())) return 'เมื่อเร็วๆ นี้';
 
-  const day = date.getDate();
+  // Convert to Thailand time (UTC+7) manually to guarantee correct date/time
+  const THAILAND_OFFSET_MS = 7 * 60 * 60 * 1000;
+  const thailandTime = new Date(date.getTime() + THAILAND_OFFSET_MS);
+  const day = thailandTime.getUTCDate();
   const monthNames = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
-  const month = monthNames[date.getMonth()];
-  const year = date.getFullYear();
-  const hours = String(date.getHours()).padStart(2, '0');
-  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const month = monthNames[thailandTime.getUTCMonth()];
+  const year = thailandTime.getUTCFullYear();
+  const hours = String(thailandTime.getUTCHours()).padStart(2, '0');
+  const minutes = String(thailandTime.getUTCMinutes()).padStart(2, '0');
 
   const diffMs = Date.now() - date.getTime();
   const diffMinutes = Math.max(0, Math.floor(diffMs / (1000 * 60)));
@@ -1000,17 +1002,49 @@ app.get('/api/news-all', async (req, res) => {
   } catch { res.json([]); }
 });
 
+async function fetchOgImage(url) {
+  if (!url || !url.startsWith('http') || url.includes('news.google.com')) return null;
+  try {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    const ogMatch = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["'](.*?)["']/i)
+                 || html.match(/<meta[^>]+content=["'](.*?)["'][^>]+property=["']og:image["']/i)
+                 || html.match(/<meta[^>]+name=["']twitter:image["'][^>]+content=["'](.*?)["']/i);
+    if (ogMatch && ogMatch[1] && ogMatch[1].startsWith('http')) {
+      return ogMatch[1].replace(/&amp;/g, '&');
+    }
+  } catch {}
+  return null;
+}
+
 /**
- * Scrape Yahoo Finance quote/news page to get real news articles with images
- * URL: https://finance.yahoo.com/quote/SYMBOL/news/
+ * GNews API cache — 30 min TTL to conserve API quota (100 req/day free)
+ */
+const gnewsCache = new Map();
+const GNEWS_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+
+/**
+ * Fetch news from GNews API, Yahoo RSS, and Google News RSS with real article images
  */
 async function fetchYahooFinanceNewsPage(symbol) {
   const sym = (symbol || '').toUpperCase();
   const items = [];
+  const GNEWS_API_KEY = process.env.GNEWS_API_KEY || '90cbaccd79b250d3f8249b9470c49b06';
 
-  // Run v2 API, Yahoo RSS, and Google News RSS in parallel for maximum speed & fresh news
+  // Build GNews search query from company keywords
+  const companyNames = COMPANY_KEYWORDS[sym] || [sym];
+  const gnewsQuery = encodeURIComponent(companyNames.slice(0, 2).join(' ') + ' stock');
+
+  // Run GNews API, Yahoo RSS, and Google News RSS in parallel
   try {
-    const [resV2, resYfRss, resGnRss] = await Promise.allSettled([
+    const [resGNews, resV2, resYfRss, resGnRss] = await Promise.allSettled([
+      fetch(`https://gnews.io/api/v4/search?q=${gnewsQuery}&token=${GNEWS_API_KEY}&lang=en&max=10&sortby=publishedAt`, {
+        signal: AbortSignal.timeout(5000),
+      }),
       fetch(`https://query2.finance.yahoo.com/v2/finance/news?symbols=${sym}&count=25&lang=en-US&region=US`, {
         signal: AbortSignal.timeout(4000),
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': 'application/json' },
@@ -1024,6 +1058,41 @@ async function fetchYahooFinanceNewsPage(symbol) {
         headers: { 'User-Agent': 'Mozilla/5.0' },
       })
     ]);
+
+    // Parse GNews API (PRIORITY — always has real article images!)
+    // Check cache first to conserve API quota
+    const gnewsCacheKey = `gnews-${sym}`;
+    const cached = gnewsCache.get(gnewsCacheKey);
+    if (cached && (Date.now() - cached.time) < GNEWS_CACHE_TTL) {
+      items.push(...cached.articles);
+      console.log(`🖼️ GNews CACHE HIT: ${cached.articles.length} articles for ${sym}`);
+    } else if (resGNews.status === 'fulfilled' && resGNews.value.ok) {
+      try {
+        const data = await resGNews.value.json();
+        const articles = data?.articles || [];
+        console.log(`🖼️ GNews: ${articles.length} articles with real images for ${sym}`);
+        for (const article of articles) {
+          const title = article.title || '';
+          if (!title || title.length < 5) continue;
+          if (!items.some(x => x.title === title)) {
+            items.push({
+              uuid: `gnews-${sym}-${items.length}`,
+              title,
+              summary: article.description || article.content || title,
+              publisher: article.source?.name || 'News',
+              link: article.url || '',
+              providerPublishTime: new Date(article.publishedAt).getTime() || Date.now(),
+              realImage: article.image || null,
+            });
+          }
+        }
+        // Save to cache
+        const gnewsItems = items.filter(x => x.uuid.startsWith('gnews-'));
+        gnewsCache.set(gnewsCacheKey, { time: Date.now(), articles: gnewsItems });
+      } catch (e) {
+        console.warn('GNews parse error:', e.message);
+      }
+    }
 
     // Parse v2 API
     if (resV2.status === 'fulfilled' && resV2.value.ok) {
@@ -1053,13 +1122,20 @@ async function fetchYahooFinanceNewsPage(symbol) {
     if (resYfRss.status === 'fulfilled' && resYfRss.value.ok) {
       try {
         const xml = await resYfRss.value.text();
-        const itemRegex = /<item>[\s\S]*?<title>(.*?)<\/title>[\s\S]*?<link>(.*?)<\/link>[\s\S]*?<pubDate>(.*?)<\/pubDate>(?:[\s\S]*?<description>(.*?)<\/description>)?[\s\S]*?<\/item>/gi;
+        const itemRegex = /<item>([\s\S]*?)<\/item>/gi;
         let match;
         while ((match = itemRegex.exec(xml)) !== null) {
-          let rawTitle = match[1].replace(/<!\[CDATA\[/gi, '').replace(/\]\]>/gi, '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').trim();
-          let rawLink = match[2].replace(/<!\[CDATA\[/gi, '').replace(/\]\]>/gi, '').trim();
-          let pubDateStr = match[3].trim();
-          let rawDesc = (match[4] || '').replace(/<!\[CDATA\[/gi, '').replace(/\]\]>/gi, '').replace(/<[^>]+>/g, '').trim();
+          const itemXml = match[1];
+          const titleMatch = itemXml.match(/<title>(.*?)<\/title>/i);
+          const linkMatch = itemXml.match(/<link>(.*?)<\/link>/i);
+          const pubMatch = itemXml.match(/<pubDate>(.*?)<\/pubDate>/i);
+          const descMatch = itemXml.match(/<description>(.*?)<\/description>/i);
+
+          let rawTitle = titleMatch ? titleMatch[1].replace(/<!\[CDATA\[/gi, '').replace(/\]\]>/gi, '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').trim() : '';
+          let rawLink = linkMatch ? linkMatch[1].replace(/<!\[CDATA\[/gi, '').replace(/\]\]>/gi, '').trim() : '';
+          let pubDateStr = pubMatch ? pubMatch[1].trim() : '';
+          let rawDesc = descMatch ? descMatch[1].replace(/<!\[CDATA\[/gi, '').replace(/\]\]>/gi, '').replace(/<[^>]+>/g, '').trim() : '';
+          let xmlImg = extractImageFromXml(itemXml);
 
           if (rawTitle && rawTitle.length > 5 && !items.some(x => x.title === rawTitle)) {
             items.push({
@@ -1069,7 +1145,7 @@ async function fetchYahooFinanceNewsPage(symbol) {
               publisher: 'Yahoo Finance',
               link: rawLink,
               providerPublishTime: new Date(pubDateStr).getTime() || Date.now(),
-              realImage: null,
+              realImage: xmlImg,
             });
           }
         }
@@ -1080,13 +1156,20 @@ async function fetchYahooFinanceNewsPage(symbol) {
     if (resGnRss.status === 'fulfilled' && resGnRss.value.ok) {
       try {
         const xml = await resGnRss.value.text();
-        const itemRegex = /<item>[\s\S]*?<title>(.*?)<\/title>[\s\S]*?<link>(.*?)<\/link>[\s\S]*?<pubDate>(.*?)<\/pubDate>[\s\S]*?(?:<source[^>]*>(.*?)<\/source>)?[\s\S]*?<\/item>/gi;
+        const itemRegex = /<item>([\s\S]*?)<\/item>/gi;
         let match;
         while ((match = itemRegex.exec(xml)) !== null) {
-          let rawTitle = match[1].replace(/<!\[CDATA\[/gi, '').replace(/\]\]>/gi, '').replace(/&amp;/g, '&').trim();
-          let rawLink = match[2].replace(/<!\[CDATA\[/gi, '').replace(/\]\]>/gi, '').trim();
-          let pubDateStr = match[3].trim();
-          let publisher = (match[4] || '').replace(/<!\[CDATA\[/gi, '').replace(/\]\]>/gi, '').trim() || 'Google News';
+          const itemXml = match[1];
+          const titleMatch = itemXml.match(/<title>(.*?)<\/title>/i);
+          const linkMatch = itemXml.match(/<link>(.*?)<\/link>/i);
+          const pubMatch = itemXml.match(/<pubDate>(.*?)<\/pubDate>/i);
+          const sourceMatch = itemXml.match(/<source[^>]*>(.*?)<\/source>/i);
+
+          let rawTitle = titleMatch ? titleMatch[1].replace(/<!\[CDATA\[/gi, '').replace(/\]\]>/gi, '').replace(/&amp;/g, '&').trim() : '';
+          let rawLink = linkMatch ? linkMatch[1].replace(/<!\[CDATA\[/gi, '').replace(/\]\]>/gi, '').trim() : '';
+          let pubDateStr = pubMatch ? pubMatch[1].trim() : '';
+          let publisher = sourceMatch ? sourceMatch[1].replace(/<!\[CDATA\[/gi, '').replace(/\]\]>/gi, '').trim() : 'Google News';
+          let xmlImg = extractImageFromXml(itemXml);
 
           if (rawTitle && rawTitle.length > 5 && !items.some(x => x.title === rawTitle)) {
             items.push({
@@ -1096,7 +1179,7 @@ async function fetchYahooFinanceNewsPage(symbol) {
               publisher,
               link: rawLink,
               providerPublishTime: new Date(pubDateStr).getTime() || Date.now(),
-              realImage: null,
+              realImage: xmlImg,
             });
           }
         }
@@ -1242,7 +1325,7 @@ app.get('/api/news/:symbol', async (req, res) => {
         const titleTh = await translateToThai(item.title);
         const summaryEn = item.summary || item.title;
         const summaryTh = await translateToThai(summaryEn);
-        const thumbnail = extractThumbnail(item, symUpper, idx);
+        const thumbnail = item.realImage || extractImageFromXml(item.summary) || extractThumbnail(item, symUpper, idx);
         const sentimentObj = analyzeSentiment(item.title, summaryEn);
         const keyTakeawaysTh = generateThaiStockTakeaways(symUpper, item.title, summaryEn, titleTh, summaryTh);
 
