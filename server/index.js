@@ -393,9 +393,17 @@ async function translateToThai(text) {
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    const translated = data?.[0]?.map(item => item[0]).join('') || text;
+    let translated = data?.[0]?.map(item => item[0]).join('') || text;
     
     if (translated && !translated.includes('MYMEMORY WARNING')) {
+      // Post-process financial terms for natural Thai readability
+      translated = translated
+        .replace(/Wall Street/gi, 'วอลล์สตรีท')
+        .replace(/Federal Reserve/gi, 'ธนาคารกลางสหรัฐฯ (Fed)')
+        .replace(/S&P 500/gi, 'ดัชนี S&P 500')
+        .replace(/Nasdaq/gi, 'ดัชนี Nasdaq')
+        .replace(/Dow Jones/gi, 'ดัชนีดาวโจนส์');
+
       translateCache.set(key, translated);
       return translated;
     }
@@ -403,6 +411,31 @@ async function translateToThai(text) {
   } catch {
     return text;
   }
+}
+
+function generateThaiStockTakeaways(symbol, title = '', summary = '', titleTh = '', summaryTh = '') {
+  const sym = (symbol || 'หุ้น').toUpperCase();
+  const text = (title + ' ' + summary + ' ' + titleTh + ' ' + summaryTh).toLowerCase();
+  
+  let topicPoint = `📌 สาระสำคัญ: ${titleTh || title}`;
+  let impactPoint = `📊 ผลกระทบต่อหุ้น ${sym}: ติดตามผลประกอบการ รายได้ และอัตรากำไรที่มีผลต่อการประเมินมูลค่าหุ้น`;
+  let strategyPoint = `🎯 มุมมองการลงทุน: นักลงทุนสถาบันจับตาการเคลื่อนไหวตามแนวรับ-แนวต้านหลักในการวางกลยุทธ์`;
+
+  if (text.includes('earning') || text.includes('revenue') || text.includes('profit') || text.includes('quarter') || text.includes('รายได้') || text.includes('กำไร')) {
+    impactPoint = `📊 ผลกระทบต่อหุ้น ${sym}: รายได้และกำไรสุทธิส่งผลโดยตรงต่อการปรับราคาเป้าหมายจากนักวิเคราะห์`;
+  } else if (text.includes('ai') || text.includes('chip') || text.includes('cloud') || text.includes('tech')) {
+    impactPoint = `📊 ผลกระทบต่อหุ้น ${sym}: การเติบโตของเทคโนโลยี AI เป็นแรงหนุนสำคัญต่อการเติบโตในระยะยาว`;
+  } else if (text.includes('fed') || text.includes('rate') || text.includes('inflation') || text.includes('market')) {
+    impactPoint = `📊 ผลกระทบต่อหุ้น ${sym}: สภาพแวดล้อมอัตราดอกเบี้ยและนโยบายการเงินสร้างความผันผวนต่อทิศทางราคา`;
+  }
+
+  if (text.includes('surge') || text.includes('jump') || text.includes('soar') || text.includes('beat') || text.includes('rally') || text.includes('พุ่ง') || text.includes('เติบโต')) {
+    strategyPoint = `🎯 มุมมองการลงทุน: สัญญาณซื้อเชิงบวก (Bullish Momentum) มีโอกาสขึ้นทดสอบระดับแนวต้านถัดไป`;
+  } else if (text.includes('drop') || text.includes('fall') || text.includes('plunge') || text.includes('decline') || text.includes('down') || text.includes('ร่วง') || text.includes('ดิ่ง')) {
+    strategyPoint = `🎯 มุมมองการลงทุน: มีแรงกดดันฝั่งขาย (Bearish Pressure) ควรระมัดระวังและรอสัญญาณกลับตัวบริเวณแนวรับ`;
+  }
+
+  return [topicPoint, impactPoint, strategyPoint];
 }
 
 function extractArticleParagraphs(html) {
@@ -922,6 +955,8 @@ app.get('/api/news-all', async (req, res) => {
         const summaryTh = await translateToThai(summaryEn);
         const thumbnail = extractThumbnail(item);
         const sentimentObj = analyzeSentiment(item.title, summaryEn);
+        const symbolGuess = item.relatedTickers?.[0] || 'ตลาดหุ้น';
+        const keyTakeawaysTh = generateThaiStockTakeaways(symbolGuess, item.title, summaryEn, titleTh, summaryTh);
 
         return {
           id: item.uuid || Math.random().toString(36).slice(2),
@@ -929,6 +964,7 @@ app.get('/api/news-all', async (req, res) => {
           titleTh,
           summaryEn,
           summaryTh,
+          keyTakeawaysTh,
           publisher: item.publisher || 'Reuters / Financial News',
           link: item.link,
           time: formatNewsDate(item.providerPublishTime),
@@ -1110,10 +1146,10 @@ app.get('/api/news/:symbol', async (req, res) => {
     // Fetch from RSS feeds only — works 100% on both localhost AND cloud (Render/AWS)
     // yf.search is NOT used here because Yahoo Finance blocks cloud datacenter IPs
     const companyName = kwList[1] || symUpper;
-    const [rssItems, gnItems] = await Promise.allSettled([
+    const [rssItems, gnItems, gnPriceItems] = await Promise.allSettled([
       fetchYahooFinanceNewsPage(symUpper),
-      // Extra Google News RSS with company name for more coverage
-      fetch(`https://news.google.com/rss/search?q=${encodeURIComponent(companyName + ' stock earnings')}&hl=en-US&gl=US&ceid=US:en`, {
+      // Extra Google News RSS with company name & earnings for more coverage
+      fetch(`https://news.google.com/rss/search?q=${encodeURIComponent(companyName + ' stock earnings revenue')}&hl=en-US&gl=US&ceid=US:en`, {
         signal: AbortSignal.timeout(5000),
         headers: { 'User-Agent': 'Mozilla/5.0' },
       }).then(async r => {
@@ -1131,12 +1167,32 @@ app.get('/api/news/:symbol', async (req, res) => {
         }
         return items;
       }).catch(() => []),
+      // Direct price target & forecast RSS query
+      fetch(`https://news.google.com/rss/search?q=${encodeURIComponent(symUpper + ' stock price target forecast')}&hl=en-US&gl=US&ceid=US:en`, {
+        signal: AbortSignal.timeout(5000),
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+      }).then(async r => {
+        if (!r.ok) return [];
+        const xml = await r.text();
+        const items = [];
+        const re = /<item>[\s\S]*?<title>(.*?)<\/title>[\s\S]*?<link>(.*?)<\/link>[\s\S]*?<pubDate>(.*?)<\/pubDate>[\s\S]*?(?:<source[^>]*>(.*?)<\/source>)?[\s\S]*?<\/item>/gi;
+        let m;
+        while ((m = re.exec(xml)) !== null) {
+          const title = m[1].replace(/<!\[CDATA\[/gi,'').replace(/\]\]>/gi,'').replace(/&amp;/g,'&').trim();
+          const link = m[2].replace(/<!\[CDATA\[/gi,'').replace(/\]\]>/gi,'').trim();
+          const pub = m[3].trim();
+          const publisher = (m[4]||'').replace(/<!\[CDATA\[/gi,'').replace(/\]\]>/gi,'').trim() || 'Wall Street Journal / Reuters';
+          if (title && title.length > 5) items.push({ uuid: `gn3-${symUpper}-${items.length}`, title, summary: title, publisher, link, providerPublishTime: new Date(pub).getTime() || Date.now(), realImage: null });
+        }
+        return items;
+      }).catch(() => []),
     ]);
 
-    const rssNews = rssItems.status === 'fulfilled' ? (rssItems.value || []) : [];
-    const gnNews  = gnItems.status  === 'fulfilled' ? (gnItems.value  || []) : [];
+    const rssNews   = rssItems.status === 'fulfilled' ? (rssItems.value || []) : [];
+    const gnNews    = gnItems.status  === 'fulfilled' ? (gnItems.value  || []) : [];
+    const gnPtNews  = gnPriceItems.status === 'fulfilled' ? (gnPriceItems.value || []) : [];
 
-    const combinedRaw = [...rssNews, ...gnNews];
+    const combinedRaw = [...rssNews, ...gnNews, ...gnPtNews];
     const map = new Map();
     for (const item of combinedRaw) {
 
@@ -1172,6 +1228,7 @@ app.get('/api/news/:symbol', async (req, res) => {
         const summaryTh = await translateToThai(summaryEn);
         const thumbnail = extractThumbnail(item, symUpper, idx);
         const sentimentObj = analyzeSentiment(item.title, summaryEn);
+        const keyTakeawaysTh = generateThaiStockTakeaways(symUpper, item.title, summaryEn, titleTh, summaryTh);
 
         return {
           id: item.uuid || Math.random().toString(36).slice(2),
@@ -1179,6 +1236,7 @@ app.get('/api/news/:symbol', async (req, res) => {
           titleTh,
           summaryEn,
           summaryTh,
+          keyTakeawaysTh,
           publisher: item.publisher || 'Yahoo Finance',
           link: item.link,
           time: formatNewsDate(item.providerPublishTime),
