@@ -393,9 +393,17 @@ async function translateToThai(text) {
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    const translated = data?.[0]?.map(item => item[0]).join('') || text;
+    let translated = data?.[0]?.map(item => item[0]).join('') || text;
     
     if (translated && !translated.includes('MYMEMORY WARNING')) {
+      // Post-process financial terms for natural Thai readability
+      translated = translated
+        .replace(/Wall Street/gi, 'วอลล์สตรีท')
+        .replace(/Federal Reserve/gi, 'ธนาคารกลางสหรัฐฯ (Fed)')
+        .replace(/S&P 500/gi, 'ดัชนี S&P 500')
+        .replace(/Nasdaq/gi, 'ดัชนี Nasdaq')
+        .replace(/Dow Jones/gi, 'ดัชนีดาวโจนส์');
+
       translateCache.set(key, translated);
       return translated;
     }
@@ -403,6 +411,31 @@ async function translateToThai(text) {
   } catch {
     return text;
   }
+}
+
+function generateThaiStockTakeaways(symbol, title = '', summary = '', titleTh = '', summaryTh = '') {
+  const sym = (symbol || 'หุ้น').toUpperCase();
+  const text = (title + ' ' + summary + ' ' + titleTh + ' ' + summaryTh).toLowerCase();
+  
+  let topicPoint = `📌 สาระสำคัญ: ${titleTh || title}`;
+  let impactPoint = `📊 ผลกระทบต่อหุ้น ${sym}: ติดตามผลประกอบการ รายได้ และอัตรากำไรที่มีผลต่อการประเมินมูลค่าหุ้น`;
+  let strategyPoint = `🎯 มุมมองการลงทุน: นักลงทุนสถาบันจับตาการเคลื่อนไหวตามแนวรับ-แนวต้านหลักในการวางกลยุทธ์`;
+
+  if (text.includes('earning') || text.includes('revenue') || text.includes('profit') || text.includes('quarter') || text.includes('รายได้') || text.includes('กำไร')) {
+    impactPoint = `📊 ผลกระทบต่อหุ้น ${sym}: รายได้และกำไรสุทธิส่งผลโดยตรงต่อการปรับราคาเป้าหมายจากนักวิเคราะห์`;
+  } else if (text.includes('ai') || text.includes('chip') || text.includes('cloud') || text.includes('tech')) {
+    impactPoint = `📊 ผลกระทบต่อหุ้น ${sym}: การเติบโตของเทคโนโลยี AI เป็นแรงหนุนสำคัญต่อการเติบโตในระยะยาว`;
+  } else if (text.includes('fed') || text.includes('rate') || text.includes('inflation') || text.includes('market')) {
+    impactPoint = `📊 ผลกระทบต่อหุ้น ${sym}: สภาพแวดล้อมอัตราดอกเบี้ยและนโยบายการเงินสร้างความผันผวนต่อทิศทางราคา`;
+  }
+
+  if (text.includes('surge') || text.includes('jump') || text.includes('soar') || text.includes('beat') || text.includes('rally') || text.includes('พุ่ง') || text.includes('เติบโต')) {
+    strategyPoint = `🎯 มุมมองการลงทุน: สัญญาณซื้อเชิงบวก (Bullish Momentum) มีโอกาสขึ้นทดสอบระดับแนวต้านถัดไป`;
+  } else if (text.includes('drop') || text.includes('fall') || text.includes('plunge') || text.includes('decline') || text.includes('down') || text.includes('ร่วง') || text.includes('ดิ่ง')) {
+    strategyPoint = `🎯 มุมมองการลงทุน: มีแรงกดดันฝั่งขาย (Bearish Pressure) ควรระมัดระวังและรอสัญญาณกลับตัวบริเวณแนวรับ`;
+  }
+
+  return [topicPoint, impactPoint, strategyPoint];
 }
 
 function extractArticleParagraphs(html) {
@@ -922,6 +955,8 @@ app.get('/api/news-all', async (req, res) => {
         const summaryTh = await translateToThai(summaryEn);
         const thumbnail = extractThumbnail(item);
         const sentimentObj = analyzeSentiment(item.title, summaryEn);
+        const symbolGuess = item.relatedTickers?.[0] || 'ตลาดหุ้น';
+        const keyTakeawaysTh = generateThaiStockTakeaways(symbolGuess, item.title, summaryEn, titleTh, summaryTh);
 
         return {
           id: item.uuid || Math.random().toString(36).slice(2),
@@ -929,6 +964,7 @@ app.get('/api/news-all', async (req, res) => {
           titleTh,
           summaryEn,
           summaryTh,
+          keyTakeawaysTh,
           publisher: item.publisher || 'Reuters / Financial News',
           link: item.link,
           time: formatNewsDate(item.providerPublishTime),
@@ -1172,6 +1208,7 @@ app.get('/api/news/:symbol', async (req, res) => {
         const summaryTh = await translateToThai(summaryEn);
         const thumbnail = extractThumbnail(item, symUpper, idx);
         const sentimentObj = analyzeSentiment(item.title, summaryEn);
+        const keyTakeawaysTh = generateThaiStockTakeaways(symUpper, item.title, summaryEn, titleTh, summaryTh);
 
         return {
           id: item.uuid || Math.random().toString(36).slice(2),
@@ -1179,6 +1216,7 @@ app.get('/api/news/:symbol', async (req, res) => {
           titleTh,
           summaryEn,
           summaryTh,
+          keyTakeawaysTh,
           publisher: item.publisher || 'Yahoo Finance',
           link: item.link,
           time: formatNewsDate(item.providerPublishTime),
