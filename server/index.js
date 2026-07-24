@@ -568,7 +568,7 @@ async function fetchBatchQuotesDirect(symbols) {
 async function fetchSingleQuoteDirect(symbol) {
   const sym = symbol.toUpperCase();
   try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=1d&interval=1d`;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=1d&interval=1m&includePrePost=true`;
     const res = await fetch(url, {
       signal: AbortSignal.timeout(6000),
       headers: {
@@ -579,36 +579,74 @@ async function fetchSingleQuoteDirect(symbol) {
     if (res.ok) {
       const data = await res.json();
       const meta = data?.chart?.result?.[0]?.meta;
+      const quotes = data?.chart?.result?.[0]?.indicators?.quote?.[0]?.close || [];
+      const validCloses = quotes.filter(x => x != null);
+      const latestPrice = validCloses.length > 0 ? validCloses[validCloses.length - 1] : meta?.regularMarketPrice;
+
       if (meta && meta.regularMarketPrice) {
         const prevClose = meta.chartPreviousClose || meta.previousClose || meta.regularMarketPrice;
-        const price = meta.regularMarketPrice;
-        const change = price - prevClose;
-        const changePct = prevClose > 0 ? (change / prevClose) * 100 : 0;
+        const regPrice = meta.regularMarketPrice;
+        const regChange = regPrice - prevClose;
+        const regChangePct = prevClose > 0 ? (regChange / prevClose) * 100 : 0;
+
+        const nowSec = Math.floor(Date.now() / 1000);
+        const prePeriod = meta.currentTradingPeriod?.pre;
+        const postPeriod = meta.currentTradingPeriod?.post;
+
+        let marketState = meta.marketState || 'REGULAR';
+        let prePrice = meta.preMarketPrice || null;
+        let preChange = meta.preMarketChange || null;
+        let prePct = meta.preMarketChangePercent || null;
+
+        let postPrice = meta.postMarketPrice || null;
+        let postChange = meta.postMarketChange || null;
+        let postPct = meta.postMarketChangePercent || null;
+
+        // Force activate PRE or POST if latest candle price differs from regPrice
+        if (latestPrice && Math.abs(latestPrice - regPrice) > 0.01) {
+          if (prePeriod && nowSec >= prePeriod.start && nowSec <= prePeriod.end) {
+            marketState = 'PRE';
+            prePrice = +latestPrice.toFixed(2);
+            preChange = +(prePrice - regPrice).toFixed(2);
+            prePct = regPrice > 0 ? +((preChange / regPrice) * 100).toFixed(2) : 0;
+          } else if (postPeriod && nowSec >= postPeriod.start && nowSec <= postPeriod.end) {
+            marketState = 'POST';
+            postPrice = +latestPrice.toFixed(2);
+            postChange = +(postPrice - regPrice).toFixed(2);
+            postPct = regPrice > 0 ? +((postChange / regPrice) * 100).toFixed(2) : 0;
+          } else {
+            marketState = 'PRE';
+            prePrice = +latestPrice.toFixed(2);
+            preChange = +(prePrice - regPrice).toFixed(2);
+            prePct = regPrice > 0 ? +((preChange / regPrice) * 100).toFixed(2) : 0;
+          }
+        }
+
         return {
           symbol: sym,
           shortName: meta.shortName || meta.longName || sym,
           longName: meta.longName || meta.shortName || sym,
-          regularMarketPrice: +price.toFixed(2),
-          regularMarketChange: +change.toFixed(2),
-          regularMarketChangePercent: +changePct.toFixed(2),
+          regularMarketPrice: +regPrice.toFixed(2),
+          regularMarketChange: +regChange.toFixed(2),
+          regularMarketChangePercent: +regChangePct.toFixed(2),
           regularMarketPreviousClose: +prevClose.toFixed(2),
-          regularMarketDayHigh: meta.regularMarketDayHigh ? +meta.regularMarketDayHigh.toFixed(2) : +(price * 1.01).toFixed(2),
-          regularMarketDayLow: meta.regularMarketDayLow ? +meta.regularMarketDayLow.toFixed(2) : +(price * 0.99).toFixed(2),
+          regularMarketDayHigh: meta.regularMarketDayHigh ? +meta.regularMarketDayHigh.toFixed(2) : +(regPrice * 1.01).toFixed(2),
+          regularMarketDayLow: meta.regularMarketDayLow ? +meta.regularMarketDayLow.toFixed(2) : +(regPrice * 0.99).toFixed(2),
           fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh || null,
           fiftyTwoWeekLow: meta.fiftyTwoWeekLow || null,
           marketCap: meta.marketCap || null,
-          preMarketPrice: meta.preMarketPrice ? +meta.preMarketPrice.toFixed(2) : null,
-          preMarketChange: meta.preMarketChange ? +meta.preMarketChange.toFixed(2) : null,
-          preMarketChangePercent: meta.preMarketChangePercent ? +meta.preMarketChangePercent.toFixed(2) : null,
-          postMarketPrice: meta.postMarketPrice ? +meta.postMarketPrice.toFixed(2) : null,
-          postMarketChange: meta.postMarketChange ? +meta.postMarketChange.toFixed(2) : null,
-          postMarketChangePercent: meta.postMarketChangePercent ? +meta.postMarketChangePercent.toFixed(2) : null,
-          marketState: meta.marketState || 'REGULAR',
+          preMarketPrice: prePrice,
+          preMarketChange: preChange,
+          preMarketChangePercent: prePct,
+          postMarketPrice: postPrice,
+          postMarketChange: postChange,
+          postMarketChangePercent: postPct,
+          marketState,
         };
       }
     }
   } catch (e) {
-    console.warn(`⚠️ Direct quote fetch error for ${sym}:`, e.message);
+    console.warn(`⚠️ Error fetching direct single quote for ${sym}:`, e.message);
   }
 
   try {
