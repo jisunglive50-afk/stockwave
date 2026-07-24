@@ -381,19 +381,35 @@ function extractThumbnail(item, symbol = 'DEFAULT', index = 0) {
 const translateCache = new Map();
 const fullArticleCache = new Map();
 
+function cleanHtml(text) {
+  if (!text) return '';
+  return text
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 async function translateToThai(text) {
   if (!text || text.length < 2) return text;
-  if (text.includes('MYMEMORY WARNING')) return '';
-  const key = text.slice(0, 150);
+  const cleanInput = cleanHtml(text);
+  if (!cleanInput || cleanInput.includes('MYMEMORY WARNING')) return '';
+  const key = cleanInput.slice(0, 150);
   if (translateCache.has(key)) return translateCache.get(key);
 
   try {
-    const encoded = encodeURIComponent(text.slice(0, 1500));
+    const encoded = encodeURIComponent(cleanInput.slice(0, 1500));
     const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=th&dt=t&q=${encoded}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    let translated = data?.[0]?.map(item => item[0]).join('') || text;
+    let translated = data?.[0]?.map(item => item[0]).join('') || cleanInput;
+    translated = cleanHtml(translated);
     
     if (translated && !translated.includes('MYMEMORY WARNING')) {
       // Post-process financial terms for natural Thai readability
@@ -407,9 +423,9 @@ async function translateToThai(text) {
       translateCache.set(key, translated);
       return translated;
     }
-    return text;
+    return cleanInput;
   } catch {
-    return text;
+    return cleanInput;
   }
 }
 
