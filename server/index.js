@@ -1142,13 +1142,17 @@ async function fetchYahooFinanceNewsPage(symbol) {
   const companyNames = COMPANY_KEYWORDS[sym] || [sym];
   const gnewsQuery = encodeURIComponent(companyNames.slice(0, 2).join(' ') + ' stock');
 
-  // Run GNews API, Yahoo RSS, and Google News RSS in parallel
+  // Run GNews API, Yahoo v2, Yahoo Search API, Yahoo RSS, and Google News RSS in parallel
   try {
-    const [resGNews, resV2, resYfRss, resGnRss] = await Promise.allSettled([
+    const [resGNews, resV2, resYfSearch, resYfRss, resGnRss] = await Promise.allSettled([
       fetch(`https://gnews.io/api/v4/search?q=${gnewsQuery}&token=${GNEWS_API_KEY}&lang=en&max=10&sortby=publishedAt`, {
         signal: AbortSignal.timeout(5000),
       }),
       fetch(`https://query2.finance.yahoo.com/v2/finance/news?symbols=${sym}&count=25&lang=en-US&region=US`, {
+        signal: AbortSignal.timeout(4000),
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': 'application/json' },
+      }),
+      fetch(`https://query2.finance.yahoo.com/v1/finance/search?q=${sym}&newsCount=25&listsCount=0`, {
         signal: AbortSignal.timeout(4000),
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': 'application/json' },
       }),
@@ -1217,6 +1221,35 @@ async function fetchYahooFinanceNewsPage(symbol) {
             providerPublishTime: story.providerPublishTime || story.pubTime || story.published || Date.now(),
             realImage: imgUrl,
           });
+        }
+      } catch {}
+    }
+
+    // Parse Yahoo v1 Search API (Direct Yahoo Quote News feed)
+    if (resYfSearch.status === 'fulfilled' && resYfSearch.value.ok) {
+      try {
+        const data = await resYfSearch.value.json();
+        const newsList = data?.news || [];
+        for (const item of newsList) {
+          const title = item.title || '';
+          if (!title || title.length < 5) continue;
+          let imgUrl = null;
+          if (item.thumbnail?.resolutions?.length > 0) {
+            const resList = item.thumbnail.resolutions;
+            const best = resList.find(r => r.width >= 300) || resList[0];
+            if (best?.url) imgUrl = best.url;
+          }
+          if (!items.some(x => x.title === title)) {
+            items.push({
+              uuid: item.uuid || `yf-search-${sym}-${items.length}`,
+              title,
+              summary: item.summary || title,
+              publisher: item.publisher || 'Yahoo Finance',
+              link: item.link || `https://finance.yahoo.com/news/${item.uuid}`,
+              providerPublishTime: item.providerPublishTime ? (item.providerPublishTime * 1000) : Date.now(),
+              realImage: imgUrl,
+            });
+          }
         }
       } catch {}
     }
@@ -1335,7 +1368,23 @@ const COMPANY_KEYWORDS = {
   MARA: ['MARA', 'Marathon Digital'],
   RIOT: ['RIOT', 'Riot Platforms'],
   HOOD: ['HOOD', 'Robinhood'],
-  BA: ['BA', 'Boeing']
+  BA: ['BA', 'Boeing'],
+  EOSE: ['EOSE', 'Eos Energy'],
+  LLY: ['LLY', 'Eli Lilly'],
+  ASML: ['ASML', 'ASML Holding'],
+  ORCL: ['ORCL', 'Oracle'],
+  ASTS: ['ASTS', 'AST SpaceMobile'],
+  IONQ: ['IONQ', 'IonQ'],
+  APP: ['APP', 'AppLovin'],
+  NVO: ['NVO', 'Novo Nordisk'],
+  JPM: ['JPM', 'JPMorgan', 'JPMorgan Chase'],
+  V: ['V', 'Visa'],
+  MA: ['MA', 'Mastercard'],
+  DECK: ['DECK', 'Deckers', 'HOKA'],
+  UNH: ['UNH', 'UnitedHealth'],
+  XOM: ['XOM', 'ExxonMobil', 'Exxon'],
+  NOW: ['NOW', 'ServiceNow'],
+  ISRG: ['ISRG', 'Intuitive Surgical']
 };
 
 /** GET /api/news/:symbol — Multi-Source Yahoo Finance News Aggregator (ALL articles within 3 months) */
@@ -1423,8 +1472,20 @@ app.get('/api/news/:symbol', async (req, res) => {
 
     console.log(`📰 Focused 3-month news for ${symUpper}: ${focusedArticles.length} articles`);
 
+    // ── OG Image Enrichment: batch-fetch real article cover images for articles without realImage
+    const articlesToEnrich = focusedArticles.slice(0, 50);
+    const OG_BATCH_SIZE = 8; // fetch OG images for top 8 articles only (speed vs quality)
+    await Promise.allSettled(
+      articlesToEnrich.slice(0, OG_BATCH_SIZE).map(async (item) => {
+        if (!item.realImage && item.link && item.link.startsWith('http') && !item.link.includes('news.google.com')) {
+          const ogImg = await fetchOgImage(item.link);
+          if (ogImg) item.realImage = ogImg;
+        }
+      })
+    );
+
     const translated = await Promise.all(
-      focusedArticles.slice(0, 50).map(async (item, idx) => {
+      articlesToEnrich.map(async (item, idx) => {
         const titleTh = await translateToThai(item.title);
         const summaryEn = item.summary || item.title;
         const summaryTh = await translateToThai(summaryEn);
@@ -1751,6 +1812,28 @@ app.post('/api/auth/subscribe-pro', async (req, res) => {
     message: '🎉 สมัครสมาชิก Pro สำเร็จ! ปลดล็อกฟังก์ชันโปรทั้งหมดเรียบร้อยแล้ว',
     user: { email: user.email, name: user.name, isPro: true },
   });
+});
+
+/** POST /api/auth/sync-user — Sync user session to server store */
+app.post('/api/auth/sync-user', (req, res) => {
+  const { email, name, isPro } = req.body;
+  if (!email || !email.includes('@')) return res.status(400).json({ ok: false });
+  const cleanEmail = email.trim().toLowerCase();
+  let user = usersStore.get(cleanEmail);
+  if (!user) {
+    user = {
+      email: cleanEmail,
+      name: name || cleanEmail.split('@')[0],
+      isPro: Boolean(isPro),
+      createdAt: Date.now(),
+    };
+  } else {
+    if (isPro != null) user.isPro = Boolean(isPro);
+    if (name) user.name = name;
+  }
+  usersStore.set(cleanEmail, user);
+  saveUsers();
+  res.json({ ok: true, user });
 });
 
 const ADMIN_SECRET_KEY = process.env.ADMIN_SECRET_KEY || 'stockwave-admin-2026';
