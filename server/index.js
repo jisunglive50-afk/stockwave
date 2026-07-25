@@ -1104,19 +1104,28 @@ app.get('/api/news-all', async (req, res) => {
 });
 
 async function fetchOgImage(url) {
-  if (!url || !url.startsWith('http') || url.includes('news.google.com')) return null;
+  if (!url || !url.startsWith('http')) return null;
   try {
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
-      signal: AbortSignal.timeout(2000),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(3500),
     });
     if (!res.ok) return null;
     const html = await res.text();
-    const ogMatch = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["'](.*?)["']/i)
-                 || html.match(/<meta[^>]+content=["'](.*?)["'][^>]+property=["']og:image["']/i)
-                 || html.match(/<meta[^>]+name=["']twitter:image["'][^>]+content=["'](.*?)["']/i);
+    const ogMatch = html.match(/<meta[^>]+property=["']og:image(?::secure_url)?["'][^>]+content=["'](.*?)["']/i)
+                 || html.match(/<meta[^>]+content=["'](.*?)["'][^>]+property=["']og:image(?::secure_url)?["']/i)
+                 || html.match(/<meta[^>]+name=["']twitter:image(?::src)?["'][^>]+content=["'](.*?)["']/i)
+                 || html.match(/<meta[^>]+content=["'](.*?)["'][^>]+name=["']twitter:image(?::src)?["']/i)
+                 || html.match(/<link[^>]+rel=["']image_src["'][^>]+href=["'](.*?)["']/i);
     if (ogMatch && ogMatch[1] && ogMatch[1].startsWith('http')) {
-      return ogMatch[1].replace(/&amp;/g, '&');
+      const cleanUrl = ogMatch[1].replace(/&amp;/g, '&').trim();
+      if (!cleanUrl.includes('placeholder') && cleanUrl.length > 15) {
+        return cleanUrl;
+      }
     }
   } catch {}
   return null;
@@ -1468,14 +1477,21 @@ app.get('/api/news/:symbol', async (req, res) => {
       return isMatch;
     });
 
+    // ── Sort ALL focused articles by publish time descending (NEWEST FIRST!) ──
+    focusedArticles.sort((a, b) => {
+      const tA = a.providerPublishTime ? new Date(a.providerPublishTime).getTime() : 0;
+      const tB = b.providerPublishTime ? new Date(b.providerPublishTime).getTime() : 0;
+      return tB - tA; // Newest first!
+    });
+
     console.log(`📰 Focused 3-month news for ${symUpper}: ${focusedArticles.length} articles`);
 
-    // ── OG Image Enrichment: batch-fetch real article cover images for articles without realImage
+    // ── OG Image Enrichment: batch-fetch real article cover images for top articles without realImage
     const articlesToEnrich = focusedArticles.slice(0, 50);
-    const OG_BATCH_SIZE = 25; // fetch OG images for top 25 articles for rich coverage
+    const OG_BATCH_SIZE = 35; // fetch OG images for top 35 articles for rich coverage
     await Promise.allSettled(
       articlesToEnrich.slice(0, OG_BATCH_SIZE).map(async (item) => {
-        if (!item.realImage && item.link && item.link.startsWith('http') && !item.link.includes('news.google.com')) {
+        if (!item.realImage && item.link && item.link.startsWith('http')) {
           const ogImg = await fetchOgImage(item.link);
           if (ogImg) item.realImage = ogImg;
         }
