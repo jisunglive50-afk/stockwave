@@ -268,13 +268,24 @@ async function checkPriceAlerts() {
 setInterval(checkPriceAlerts, 5 * 60 * 1000);
 setTimeout(checkPriceAlerts, 10_000);
 
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+  credentials: false
+}));
 app.use(express.json());
 
 app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
   next();
 });
 
@@ -430,27 +441,14 @@ async function translateToThai(text) {
 
 function generateThaiStockTakeaways(symbol, title = '', summary = '', titleTh = '', summaryTh = '') {
   const sym = (symbol || 'หุ้น').toUpperCase();
-  const text = (title + ' ' + summary + ' ' + titleTh + ' ' + summaryTh).toLowerCase();
+  const titleText = titleTh || title;
+  const cleanSummary = (summaryTh || summary).slice(0, 200);
   
-  let topicPoint = `📌 สาระสำคัญ: ${titleTh || title}`;
-  let impactPoint = `📊 ผลกระทบต่อหุ้น ${sym}: ติดตามผลประกอบการ รายได้ และอัตรากำไรที่มีผลต่อการประเมินมูลค่าหุ้น`;
-  let strategyPoint = `🎯 มุมมองการลงทุน: นักลงทุนสถาบันจับตาการเคลื่อนไหวตามแนวรับ-แนวต้านหลักในการวางกลยุทธ์`;
+  let topicPoint = `📌 สาระสำคัญ: ${titleText}`;
+  let summaryPoint = `📝 รายละเอียดข่าวสด: ${cleanSummary || titleText}`;
+  let impactPoint = `📊 ผลกระทบต่อหุ้น ${sym}: ติดตามผลตอบแทน รายได้ และระดับแนวรับ-แนวต้านหลักในการวางกลยุทธ์ลงทุน`;
 
-  if (text.includes('earning') || text.includes('revenue') || text.includes('profit') || text.includes('quarter') || text.includes('รายได้') || text.includes('กำไร')) {
-    impactPoint = `📊 ผลกระทบต่อหุ้น ${sym}: รายได้และกำไรสุทธิส่งผลโดยตรงต่อการปรับราคาเป้าหมายจากนักวิเคราะห์`;
-  } else if (text.includes('ai') || text.includes('chip') || text.includes('cloud') || text.includes('tech')) {
-    impactPoint = `📊 ผลกระทบต่อหุ้น ${sym}: การเติบโตของเทคโนโลยี AI เป็นแรงหนุนสำคัญต่อการเติบโตในระยะยาว`;
-  } else if (text.includes('fed') || text.includes('rate') || text.includes('inflation') || text.includes('market')) {
-    impactPoint = `📊 ผลกระทบต่อหุ้น ${sym}: สภาพแวดล้อมอัตราดอกเบี้ยและนโยบายการเงินสร้างความผันผวนต่อทิศทางราคา`;
-  }
-
-  if (text.includes('surge') || text.includes('jump') || text.includes('soar') || text.includes('beat') || text.includes('rally') || text.includes('พุ่ง') || text.includes('เติบโต')) {
-    strategyPoint = `🎯 มุมมองการลงทุน: สัญญาณซื้อเชิงบวก (Bullish Momentum) มีโอกาสขึ้นทดสอบระดับแนวต้านถัดไป`;
-  } else if (text.includes('drop') || text.includes('fall') || text.includes('plunge') || text.includes('decline') || text.includes('down') || text.includes('ร่วง') || text.includes('ดิ่ง')) {
-    strategyPoint = `🎯 มุมมองการลงทุน: มีแรงกดดันฝั่งขาย (Bearish Pressure) ควรระมัดระวังและรอสัญญาณกลับตัวบริเวณแนวรับ`;
-  }
-
-  return [topicPoint, impactPoint, strategyPoint];
+  return [topicPoint, summaryPoint, impactPoint];
 }
 
 function extractArticleParagraphs(html) {
@@ -1551,10 +1549,9 @@ app.get('/api/news-full-content', async (req, res) => {
     if (!paragraphsEn.length) {
       paragraphsEn = [
         title,
-        'Wall Street institutional asset managers and quantitative hedge funds are closely tracking corporate financial results, macroeconomic policy shifts, and interest rate guidance.',
-        'Market sentiment reflects dynamic recalibrations in valuation models across major technology hardware leaders, cloud software infrastructure providers, and semiconductor manufacturers.',
-        'Institutional order flows indicate increased sensitivity to quarterly profit margins, free cash flow generation, and updated annual revenue forward guidance.',
-        'Investors and portfolio managers are strongly advised to align entry and exit strategies with key Fibonacci technical support and resistance levels to systematically manage risk.'
+        `According to official market reports, ${title}. This news development is drawing significant interest from financial analysts and market participants.`,
+        `Institutional investors are carefully monitoring trading activity, revenue potential, and underlying market signals related to this corporate announcement.`,
+        `Market analysts recommend tracking current stock price action relative to key technical support and resistance levels to optimize trade execution.`
       ];
     }
 
@@ -1633,9 +1630,10 @@ app.post('/api/auth/send-otp', async (req, res) => {
   }
 
   const cleanEmail = email.trim().toLowerCase();
-  if (usersStore.has(cleanEmail)) {
-    return res.status(400).json({ ok: false, error: 'อีเมลนี้ถูกลงทะเบียนแล้ว กรุณาเข้าสู่ระบบ' });
-  }
+  const existingUser = usersStore.get(cleanEmail);
+
+  // If user exists and already has a password, allow OTP for password update / login setup
+  const isReset = Boolean(existingUser && existingUser.password);
 
   // Generate random 6-digit OTP
   const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
@@ -1644,17 +1642,20 @@ app.post('/api/auth/send-otp', async (req, res) => {
   otpStore.set(cleanEmail, {
     otp: otpCode,
     expiresAt,
-    name: name || cleanEmail.split('@')[0],
+    name: name || (existingUser ? existingUser.name : cleanEmail.split('@')[0]),
     password,
   });
 
-  console.log(`📩 OTP ${otpCode} generated for email -> ${cleanEmail}`);
+  console.log(`📩 OTP ${otpCode} generated for email -> ${cleanEmail} (isReset: ${isReset})`);
 
   // Send OTP Email via Gmail SMTP
-  const subject = `[StockWave] รหัสยืนยันอีเมล OTP ของคุณคือ: ${otpCode}`;
+  const subject = isReset
+    ? `[StockWave] รหัสยืนยัน OTP สำหรับตั้งรหัสผ่านใหม่คือ: ${otpCode}`
+    : `[StockWave] รหัสยืนยันอีเมล OTP ของคุณคือ: ${otpCode}`;
+
   const text =
     `สวัสดีครับคุณ ${name || cleanEmail}!\n\n` +
-    `รหัสยืนยันอีเมล OTP 6 หลักของคุณสำหรับสมัครใช้งาน StockWave คือ:\n\n` +
+    `รหัสยืนยัน OTP 6 หลักของคุณสำหรับยืนยันตัวตนบน StockWave คือ:\n\n` +
     `🔑 ${otpCode}\n\n` +
     `(รหัส OTP นี้มีอายุใช้งาน 10 นาที โปรดอย่าเปิดเผยรหัสนี้แก่ผู้อื่น)\n\n` +
     `— ทีมงาน StockWave Alert System`;
@@ -1685,25 +1686,40 @@ app.post('/api/auth/verify-otp', async (req, res) => {
     return res.status(400).json({ ok: false, error: 'รหัส OTP ไม่ถูกต้อง กรุณาตรวจสอบรหัสในกล่องจดหมายอีเมลของคุณ' });
   }
 
-  // Verification passed -> Save user
+  // Verification passed -> Save user preserving any existing PRO status & saved data
+  const existingUser = usersStore.get(cleanEmail);
+  const isProStatus = existingUser ? Boolean(existingUser.isPro) : false;
+
   const newUser = {
     email: cleanEmail,
     password: otpData.password,
-    name: otpData.name,
-    isPro: false,
+    name: otpData.name || (existingUser ? existingUser.name : cleanEmail.split('@')[0]),
+    isPro: isProStatus,
+    watchlist: existingUser?.watchlist || ['AAPL', 'TSLA', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META'],
+    portfolio: existingUser?.portfolio || [
+      { symbol: 'AAPL', qty: 10, avgCost: 178.50 },
+      { symbol: 'NVDA', qty: 5, avgCost: 890.00 },
+      { symbol: 'TSLA', qty: 8, avgCost: 245.00 },
+    ],
     verified: true,
-    createdAt: Date.now(),
+    createdAt: existingUser?.createdAt || Date.now(),
   };
 
   usersStore.set(cleanEmail, newUser);
   saveUsers();
   otpStore.delete(cleanEmail);
 
-  console.log(`✅ Email verified & user registered -> ${cleanEmail}`);
+  console.log(`✅ Email verified & password saved for -> ${cleanEmail} (isPro: ${isProStatus})`);
 
   res.json({
     ok: true,
-    user: { email: newUser.email, name: newUser.name, isPro: false },
+    user: {
+      email: newUser.email,
+      name: newUser.name,
+      isPro: isProStatus,
+      watchlist: newUser.watchlist,
+      portfolio: newUser.portfolio,
+    },
     message: 'ยืนยันอีเมลสำเร็จ สมัครสมาชิกและเข้าสู่ระบบเรียบร้อยแล้ว!',
   });
 });
@@ -1726,10 +1742,20 @@ app.post('/api/auth/login', (req, res) => {
     return res.status(401).json({ ok: false, error: 'รหัสผ่านไม่ถูกต้อง กรุณาตรวจสอบอีกครั้ง' });
   }
 
-  console.log(`🔐 Login success → ${cleanEmail}`);
+  console.log(`🔐 Login success → ${cleanEmail} (isPro: ${Boolean(user.isPro)})`);
   res.json({
     ok: true,
-    user: { email: user.email, name: user.name, isPro: Boolean(user.isPro) },
+    user: {
+      email: user.email,
+      name: user.name,
+      isPro: Boolean(user.isPro),
+      watchlist: user.watchlist || ['AAPL', 'TSLA', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META'],
+      portfolio: user.portfolio || [
+        { symbol: 'AAPL', qty: 10, avgCost: 178.50 },
+        { symbol: 'NVDA', qty: 5, avgCost: 890.00 },
+        { symbol: 'TSLA', qty: 8, avgCost: 245.00 },
+      ],
+    },
   });
 });
 
@@ -1744,21 +1770,26 @@ app.post('/api/auth/register', async (req, res) => {
   }
 
   const cleanEmail = email.trim().toLowerCase();
-  if (usersStore.has(cleanEmail)) {
-    return res.status(400).json({ ok: false, error: 'อีเมลนี้ถูกลงทะเบียนแล้ว กรุณาเข้าสู่ระบบ' });
-  }
+  const existingUser = usersStore.get(cleanEmail);
+  const isProStatus = existingUser ? Boolean(existingUser.isPro) : false;
 
   const newUser = {
     email: cleanEmail,
     password,
-    name: name || cleanEmail.split('@')[0],
-    isPro: false,
-    createdAt: Date.now(),
+    name: name || (existingUser ? existingUser.name : cleanEmail.split('@')[0]),
+    isPro: isProStatus,
+    watchlist: existingUser?.watchlist || ['AAPL', 'TSLA', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META'],
+    portfolio: existingUser?.portfolio || [
+      { symbol: 'AAPL', qty: 10, avgCost: 178.50 },
+      { symbol: 'NVDA', qty: 5, avgCost: 890.00 },
+      { symbol: 'TSLA', qty: 8, avgCost: 245.00 },
+    ],
+    createdAt: existingUser?.createdAt || Date.now(),
   };
 
   usersStore.set(cleanEmail, newUser);
   saveUsers();
-  console.log(`✨ Registered new user → ${cleanEmail}`);
+  console.log(`✨ Registered user → ${cleanEmail} (isPro: ${isProStatus})`);
 
   // Send Welcome Email via Gmail SMTP
   sendEmail(
@@ -1769,7 +1800,13 @@ app.post('/api/auth/register', async (req, res) => {
 
   res.json({
     ok: true,
-    user: { email: newUser.email, name: newUser.name, isPro: false },
+    user: {
+      email: newUser.email,
+      name: newUser.name,
+      isPro: isProStatus,
+      watchlist: newUser.watchlist,
+      portfolio: newUser.portfolio,
+    },
   });
 });
 
@@ -1816,7 +1853,7 @@ app.post('/api/auth/subscribe-pro', async (req, res) => {
 
 /** POST /api/auth/sync-user — Sync user session to server store */
 app.post('/api/auth/sync-user', (req, res) => {
-  const { email, name, isPro } = req.body;
+  const { email, name, isPro, watchlist, portfolio } = req.body;
   if (!email || !email.includes('@')) return res.status(400).json({ ok: false });
   const cleanEmail = email.trim().toLowerCase();
   let user = usersStore.get(cleanEmail);
@@ -1825,14 +1862,53 @@ app.post('/api/auth/sync-user', (req, res) => {
       email: cleanEmail,
       name: name || cleanEmail.split('@')[0],
       isPro: Boolean(isPro),
+      watchlist: watchlist || ['AAPL', 'TSLA', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META'],
+      portfolio: portfolio || [
+        { symbol: 'AAPL', qty: 10, avgCost: 178.50 },
+        { symbol: 'NVDA', qty: 5, avgCost: 890.00 },
+        { symbol: 'TSLA', qty: 8, avgCost: 245.00 },
+      ],
       createdAt: Date.now(),
     };
   } else {
-    if (isPro != null) user.isPro = Boolean(isPro);
+    // Preserve server's isPro status if server already set isPro to true!
+    if (isPro === true) {
+      user.isPro = true;
+    }
     if (name) user.name = name;
+    if (Array.isArray(watchlist)) user.watchlist = watchlist;
+    if (Array.isArray(portfolio)) user.portfolio = portfolio;
   }
   usersStore.set(cleanEmail, user);
   saveUsers();
+  res.json({
+    ok: true,
+    user: {
+      email: user.email,
+      name: user.name,
+      isPro: Boolean(user.isPro),
+      watchlist: user.watchlist || ['AAPL', 'TSLA', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META'],
+      portfolio: user.portfolio || [
+        { symbol: 'AAPL', qty: 10, avgCost: 178.50 },
+        { symbol: 'NVDA', qty: 5, avgCost: 890.00 },
+        { symbol: 'TSLA', qty: 8, avgCost: 245.00 },
+      ],
+    }
+  });
+});
+
+/** POST /api/user/save-data — Save user watchlist & portfolio */
+app.post('/api/user/save-data', (req, res) => {
+  const { email, watchlist, portfolio } = req.body;
+  if (!email) return res.status(400).json({ ok: false });
+  const cleanEmail = email.trim().toLowerCase();
+  let user = usersStore.get(cleanEmail);
+  if (user) {
+    if (Array.isArray(watchlist)) user.watchlist = watchlist;
+    if (Array.isArray(portfolio)) user.portfolio = portfolio;
+    saveUsers();
+    console.log(`💾 Saved user data for → ${cleanEmail}`);
+  }
   res.json({ ok: true, user });
 });
 
