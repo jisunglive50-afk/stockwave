@@ -570,7 +570,7 @@ async function fetchSingleQuoteDirect(symbol) {
     const res = await fetch(url, {
       signal: AbortSignal.timeout(6000),
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept': 'application/json',
       }
     });
@@ -591,7 +591,7 @@ async function fetchSingleQuoteDirect(symbol) {
         const prePeriod = meta.currentTradingPeriod?.pre;
         const postPeriod = meta.currentTradingPeriod?.post;
 
-        let marketState = meta.marketState || 'REGULAR';
+        let marketState = meta.marketState || 'CLOSED';
         let prePrice = meta.preMarketPrice || null;
         let preChange = meta.preMarketChange || null;
         let prePct = meta.preMarketChangePercent || null;
@@ -600,7 +600,7 @@ async function fetchSingleQuoteDirect(symbol) {
         let postChange = meta.postMarketChange || null;
         let postPct = meta.postMarketChangePercent || null;
 
-        // Force activate PRE or POST if latest candle price differs from regPrice
+        // Force activate PRE or POST ONLY IF currently within trading period window
         if (latestPrice && Math.abs(latestPrice - regPrice) > 0.01) {
           if (prePeriod && nowSec >= prePeriod.start && nowSec <= prePeriod.end) {
             marketState = 'PRE';
@@ -613,10 +613,7 @@ async function fetchSingleQuoteDirect(symbol) {
             postChange = +(postPrice - regPrice).toFixed(2);
             postPct = regPrice > 0 ? +((postChange / regPrice) * 100).toFixed(2) : 0;
           } else {
-            marketState = 'PRE';
-            prePrice = +latestPrice.toFixed(2);
-            preChange = +(prePrice - regPrice).toFixed(2);
-            prePct = regPrice > 0 ? +((preChange / regPrice) * 100).toFixed(2) : 0;
+            marketState = 'CLOSED';
           }
         }
 
@@ -2024,6 +2021,32 @@ app.get('/api/admin/users', (req, res) => {
     createdAt: u.createdAt || Date.now(),
   }));
   res.json(usersList);
+});
+
+/** POST /api/admin/sync-all-users — Persist full user roster to server disk */
+app.post('/api/admin/sync-all-users', (req, res) => {
+  const { users } = req.body;
+  if (Array.isArray(users)) {
+    for (const u of users) {
+      if (u?.email) {
+        const cleanEmail = u.email.trim().toLowerCase();
+        let existing = usersStore.get(cleanEmail);
+        if (!existing) {
+          usersStore.set(cleanEmail, {
+            email: cleanEmail,
+            name: u.name || cleanEmail.split('@')[0],
+            isPro: Boolean(u.isPro),
+            createdAt: u.createdAt || Date.now(),
+          });
+        } else {
+          if (u.isPro !== undefined) existing.isPro = Boolean(u.isPro);
+          if (u.name) existing.name = u.name;
+        }
+      }
+    }
+    saveUsers();
+  }
+  res.json({ ok: true, count: usersStore.size });
 });
 
 /** DELETE /api/admin/users/:email — Delete a user account */
