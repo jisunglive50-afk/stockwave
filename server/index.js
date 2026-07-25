@@ -1472,7 +1472,7 @@ app.get('/api/news/:symbol', async (req, res) => {
 
     // ── OG Image Enrichment: batch-fetch real article cover images for articles without realImage
     const articlesToEnrich = focusedArticles.slice(0, 50);
-    const OG_BATCH_SIZE = 8; // fetch OG images for top 8 articles only (speed vs quality)
+    const OG_BATCH_SIZE = 25; // fetch OG images for top 25 articles for rich coverage
     await Promise.allSettled(
       articlesToEnrich.slice(0, OG_BATCH_SIZE).map(async (item) => {
         if (!item.realImage && item.link && item.link.startsWith('http') && !item.link.includes('news.google.com')) {
@@ -1482,6 +1482,31 @@ app.get('/api/news/:symbol', async (req, res) => {
       })
     );
 
+function analyzeNewsImpact(title = '', summary = '') {
+  const text = (title + ' ' + summary).toLowerCase();
+  const highImpactKeywords = [
+    'earnings', 'revenue', 'profit', 'quarterly', 'q1', 'q2', 'q3', 'q4', 'guidance',
+    'upgrade', 'upgraded', 'price target', 'buy rating', 'overweight', 'outperform',
+    'acquisition', 'acquire', 'merger', 'deal', 'contract', 'billion', 'million',
+    'fda', 'approval', 'approved', 'patent', 'partnership', 'partnered',
+    'fed', 'interest rate', 'rate cut', 'rate hike', 'cpi', 'inflation',
+    'sec', 'ceo', 'cfo', 'lawsuit', 'settlement', 'investigation', 'breakout', 'record high'
+  ];
+
+  let score = 0;
+  for (const kw of highImpactKeywords) {
+    if (text.includes(kw)) score += 1;
+  }
+
+  const isCritical = score >= 1;
+  return {
+    isCritical,
+    impactScore: score,
+    impactLevel: score >= 2 ? 'HIGH' : score === 1 ? 'MEDIUM' : 'NORMAL',
+    impactLabel: score >= 2 ? '🔥 ข่าวสำคัญมาก' : score === 1 ? '⚡ ข่าวสำคัญ' : '📋 ข่าวทั่วไป',
+  };
+}
+
     const translated = await Promise.all(
       articlesToEnrich.map(async (item, idx) => {
         const titleTh = await translateToThai(item.title);
@@ -1489,6 +1514,7 @@ app.get('/api/news/:symbol', async (req, res) => {
         const summaryTh = await translateToThai(summaryEn);
         const thumbnail = item.realImage || extractImageFromXml(item.summary) || extractThumbnail(item, symUpper, idx);
         const sentimentObj = analyzeSentiment(item.title, summaryEn);
+        const impactObj = analyzeNewsImpact(item.title, summaryEn);
         const keyTakeawaysTh = generateThaiStockTakeaways(symUpper, item.title, summaryEn, titleTh, summaryTh);
 
         return {
@@ -1509,6 +1535,10 @@ app.get('/api/news/:symbol', async (req, res) => {
           sentimentBg: sentimentObj.bg,
           sentimentBorder: sentimentObj.border,
           sentimentIcon: sentimentObj.icon,
+          isCritical: impactObj.isCritical,
+          impactLevel: impactObj.impactLevel,
+          impactLabel: impactObj.impactLabel,
+          impactScore: impactObj.impactScore,
         };
       })
     );
