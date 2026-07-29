@@ -33,8 +33,30 @@ const app = express();
 const PORT = 3001;
 
 // ─── API Keys & Credentials ───────────────────────────────────────────────────
-const TELEGRAM_TOKEN  = process.env.TELEGRAM_BOT_TOKEN || '';
-const TELEGRAM_API    = TELEGRAM_TOKEN ? `https://api.telegram.org/bot${TELEGRAM_TOKEN}` : null;
+let TELEGRAM_TOKEN = (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_BOT_TOKEN !== 'ใส่_Token_ของคุณ_ที่_นี่') ? process.env.TELEGRAM_BOT_TOKEN.trim() : '';
+const TELEGRAM_CONFIG_FILE = path.join(__dirname, 'telegram_config.json');
+
+function loadTelegramConfig() {
+  try {
+    if (fs.existsSync(TELEGRAM_CONFIG_FILE)) {
+      const cfg = JSON.parse(fs.readFileSync(TELEGRAM_CONFIG_FILE, 'utf8'));
+      if (cfg.token && cfg.token !== 'ใส่_Token_ของคุณ_ที่_นี่') {
+        TELEGRAM_TOKEN = cfg.token.trim();
+        console.log('✈️ Loaded custom Telegram Bot Token from config file');
+      }
+    }
+  } catch (e) {
+    console.warn('⚠️ Could not load telegram_config.json:', e.message);
+  }
+}
+loadTelegramConfig();
+
+function saveTelegramConfig(token) {
+  try {
+    TELEGRAM_TOKEN = token.trim();
+    fs.writeFileSync(TELEGRAM_CONFIG_FILE, JSON.stringify({ token: TELEGRAM_TOKEN, updatedAt: new Date().toISOString() }, null, 2));
+  } catch {}
+}
 
 const TWILIO_SID      = process.env.TWILIO_ACCOUNT_SID || '';
 const TWILIO_AUTH     = process.env.TWILIO_AUTH_TOKEN || '';
@@ -72,15 +94,40 @@ function saveAlerts() {
 loadAlerts();
 
 // ─── Telegram Sender Helper ───────────────────────────────────────────────────
-async function sendTelegram(chatId, text) {
-  if (!TELEGRAM_API) return { ok: false, error: 'No Telegram Bot Token configured' };
+async function sendTelegram(chatId, text, botTokenOverride = null) {
+  const token = (botTokenOverride || TELEGRAM_TOKEN || '').trim();
+  if (!token || token === 'ใส่_Token_ของคุณ_ที่_นี่') {
+    return {
+      ok: false,
+      error: 'ยังไม่ได้ระบุ Telegram Bot Token — กรุณากรอก Bot Token จาก @BotFather ในเมนูตั้งค่า'
+    };
+  }
+
+  const telegramApiUrl = `https://api.telegram.org/bot${token}`;
   try {
-    const r = await fetch(`${TELEGRAM_API}/sendMessage`, {
+    const r = await fetch(`${telegramApiUrl}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
     });
-    return await r.json();
+    const data = await r.json();
+    if (!data.ok) {
+      const desc = data.description || '';
+      if (desc.includes('chat not found') || desc.includes('blocked') || desc.includes('user not found')) {
+        return {
+          ok: false,
+          error: 'ไม่พบ Chat ID นี้ หรือยังไม่ได้เปิด Telegram แล้วกด /start กับบอท'
+        };
+      }
+      if (desc.includes('Unauthorized') || desc.includes('Not Found')) {
+        return {
+          ok: false,
+          error: 'Telegram Bot Token ไม่ถูกต้อง (Unauthorized) — กรุณาตรวจสอบ Token จาก @BotFather'
+        };
+      }
+      return { ok: false, error: desc || 'ส่งข้อความเข้า Telegram ไม่สำเร็จ' };
+    }
+    return { ok: true, result: data.result };
   } catch (e) {
     return { ok: false, error: e.message };
   }
@@ -2219,19 +2266,36 @@ app.post('/api/email/send', async (req, res) => {
   res.json(result);
 });
 
-/** GET /api/telegram/verify?chatId=xxx — Test Telegram connection */
+/** GET /api/telegram/verify?chatId=xxx&msg=yyy&botToken=zzz — Test Telegram connection */
 app.get('/api/telegram/verify', async (req, res) => {
-  const { chatId } = req.query;
-  if (!chatId) return res.status(400).json({ ok: false, error: 'chatId required' });
-  if (!TELEGRAM_API) return res.json({ ok: false, error: 'Bot Token not configured in .env' });
+  const { chatId, msg, botToken } = req.query;
+  if (!chatId) return res.status(400).json({ ok: false, error: 'กรุณาระบุ Telegram Chat ID' });
 
-  const result = await sendTelegram(
-    chatId,
-    `✅ *เชื่อมต่อ StockWave สำเร็จ!*\n\n` +
-    `📲 คุณจะได้รับการแจ้งเตือนเด้งบนมือถือทันที เมื่อราคาหุ้นถึงแนวรับที่ตั้งไว้\n\n` +
+  const text = msg || (
+    `✅ *เชื่อมต่อ StockWave Alert สำเร็จ!*\n\n` +
+    `📲 คุณจะได้รับการแจ้งเตือนเด้งบนมือถือทันที เมื่อราคาหุ้นถึงแนวรับ/แนวต้านที่ตั้งไว้\n\n` +
     `🔔 ระบบตรวจสอบราคาทุก *5 นาที* ตลอด 24 ชั่วโมง`
   );
+
+  const result = await sendTelegram(chatId.trim(), text, botToken);
   res.json(result);
+});
+
+/** POST /api/telegram/config — Update Telegram Bot Token dynamically */
+app.post('/api/telegram/config', (req, res) => {
+  const { token } = req.body;
+  if (!token || !token.trim()) return res.status(400).json({ ok: false, error: 'กรุณากรอก Telegram Bot Token' });
+  saveTelegramConfig(token.trim());
+  res.json({ ok: true, message: 'บันทึก Telegram Bot Token สำเร็จ' });
+});
+
+/** GET /api/telegram/config — Get Telegram Bot Status */
+app.get('/api/telegram/config', (req, res) => {
+  res.json({
+    ok: true,
+    configured: Boolean(TELEGRAM_TOKEN && TELEGRAM_TOKEN !== 'ใส่_Token_ของคุณ_ที่_นี่'),
+    maskedToken: TELEGRAM_TOKEN ? `${TELEGRAM_TOKEN.slice(0, 6)}...` : '',
+  });
 });
 
 /** POST /api/telegram/webhook — Auto-reply Chat ID */
