@@ -796,7 +796,17 @@ app.get('/api/financials/:symbol', async (req, res) => {
   const { symbol } = req.params;
   try {
     const summary = await yf.quoteSummary(symbol, {
-      modules: ['earnings', 'financialData', 'defaultKeyStatistics', 'summaryDetail', 'assetProfile']
+      modules: [
+        'earnings',
+        'financialData',
+        'defaultKeyStatistics',
+        'summaryDetail',
+        'assetProfile',
+        'incomeStatementHistoryQuarterly',
+        'earningsHistory',
+        'earningsTrend',
+        'calendarEvents'
+      ]
     }, { validateResult: false });
 
     res.json(summary || {});
@@ -927,15 +937,31 @@ app.get('/api/company-profile/:symbol', async (req, res) => {
 /** GET /api/movers/:type */
 app.get('/api/movers/:type', async (req, res) => {
   const { type } = req.params;
-  const MAG7 = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA'];
+  const PROMINENT_POOL = [
+    'NVDA', 'TSLA', 'AAPL', 'META', 'AMZN', 'MSFT', 'GOOGL', 'PLTR',
+    'RKLB', 'EOSE', 'COIN', 'ARM', 'SMCI', 'AMD', 'LLY', 'MSTR', 'SOFI',
+    'HOOD', 'SMR', 'RIVN', 'NFLX', 'DIS', 'AVGO', 'QCOM', 'SNOW', 'SHOP',
+    'CRWD', 'ORCL', 'PYPL', 'ENPH'
+  ];
   try {
-    const result = await yf.screener({ scrIds: type, count: 10 }, {}, { validateResult: false });
+    const result = await yf.screener({ scrIds: type, count: 12 }, {}, { validateResult: false });
     if (result?.quotes?.length) return res.json(result.quotes);
   } catch {}
 
   try {
-    const quotes = await Promise.allSettled(MAG7.map(s => yf.quote(s, {}, { validateResult: false })));
-    res.json(quotes.filter(r => r.status === 'fulfilled' && r.value).map(r => r.value));
+    const results = await fetchBatchQuotesDirect(PROMINENT_POOL);
+    if (results && results.length > 0) {
+      const sorted = [...results];
+      if (type === 'day_gainers') {
+        sorted.sort((a, b) => (b.regularMarketChangePercent || 0) - (a.regularMarketChangePercent || 0));
+      } else if (type === 'day_losers') {
+        sorted.sort((a, b) => (a.regularMarketChangePercent || 0) - (b.regularMarketChangePercent || 0));
+      } else {
+        sorted.sort((a, b) => Math.abs(b.regularMarketChangePercent || 0) - Math.abs(a.regularMarketChangePercent || 0));
+      }
+      return res.json(sorted);
+    }
+    res.json([]);
   } catch {
     res.json([]);
   }
