@@ -601,6 +601,7 @@ async function fetchSingleQuoteDirect(symbol) {
         let postPct = meta.postMarketChangePercent || null;
 
         // Force activate PRE or POST ONLY IF currently within trading period window
+        // But always preserve pre/post prices if Yahoo returned them (overnight OTC data)
         if (latestPrice && Math.abs(latestPrice - regPrice) > 0.01) {
           if (prePeriod && nowSec >= prePeriod.start && nowSec <= prePeriod.end) {
             marketState = 'PRE';
@@ -613,7 +614,13 @@ async function fetchSingleQuoteDirect(symbol) {
             postChange = +(postPrice - regPrice).toFixed(2);
             postPct = regPrice > 0 ? +((postChange / regPrice) * 100).toFixed(2) : 0;
           } else {
+            // Market is CLOSED — use latestPrice as overnight/post price if significantly different
             marketState = 'CLOSED';
+            if (!postPrice && Math.abs(latestPrice - regPrice) > 0.01) {
+              postPrice = +latestPrice.toFixed(2);
+              postChange = +(postPrice - regPrice).toFixed(2);
+              postPct = regPrice > 0 ? +((postChange / regPrice) * 100).toFixed(2) : 0;
+            }
           }
         }
 
