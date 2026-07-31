@@ -1776,19 +1776,13 @@ const otpStore = new Map();
 
 /** POST /api/auth/send-otp — Send 6-digit OTP to Email for Verification */
 app.post('/api/auth/send-otp', async (req, res) => {
-  const { email, password, name } = req.body;
+  const { email, name } = req.body;
   if (!email || !email.includes('@')) {
     return res.status(400).json({ ok: false, error: 'กรุณากรอกรูปแบบอีเมลให้ถูกต้อง' });
-  }
-  if (!password || password.length < 4) {
-    return res.status(400).json({ ok: false, error: 'รหัสผ่านต้องมีความยาวอย่างน้อย 4 ตัวอักษร' });
   }
 
   const cleanEmail = email.trim().toLowerCase();
   const existingUser = usersStore.get(cleanEmail);
-
-  // If user exists and already has a password, allow OTP for password update / login setup
-  const isReset = Boolean(existingUser && existingUser.password);
 
   // Generate random 6-digit OTP
   const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
@@ -1798,35 +1792,38 @@ app.post('/api/auth/send-otp', async (req, res) => {
     otp: otpCode,
     expiresAt,
     name: name || (existingUser ? existingUser.name : cleanEmail.split('@')[0]),
-    password,
   });
 
-  console.log(`📩 OTP ${otpCode} generated for email -> ${cleanEmail} (isReset: ${isReset})`);
+  console.log(`📩 OTP ${otpCode} generated for email -> ${cleanEmail}`);
 
   // Send OTP Email via Gmail SMTP
-  const subject = isReset
-    ? `[StockWave] รหัสยืนยัน OTP สำหรับตั้งรหัสผ่านใหม่คือ: ${otpCode}`
-    : `[StockWave] รหัสยืนยันอีเมล OTP ของคุณคือ: ${otpCode}`;
-
+  const subject = `🔐 [StockWave Security] รหัสยืนยันตัวตน OTP ของคุณคือ: ${otpCode.slice(0, 3)}-${otpCode.slice(3)}`;
   const text =
     `สวัสดีครับคุณ ${name || cleanEmail}!\n\n` +
-    `รหัสยืนยัน OTP 6 หลักของคุณสำหรับยืนยันตัวตนบน StockWave คือ:\n\n` +
-    `🔑 ${otpCode}\n\n` +
+    `รหัสยืนยัน OTP 6 หลักสำหรับเข้าสู่ระบบ StockWave Pro คือ:\n\n` +
+    `  ▶▶ [ ${otpCode} ] ◀◀\n\n` +
     `(รหัส OTP นี้มีอายุใช้งาน 10 นาที โปรดอย่าเปิดเผยรหัสนี้แก่ผู้อื่น)\n\n` +
-    `— ทีมงาน StockWave Alert System`;
+    `— ทีมงาน StockWave Pro`;
 
-  await sendEmail(cleanEmail, subject, text).catch(e => console.error('OTP Send error:', e.message));
+  try {
+    await sendEmail(cleanEmail, subject, text);
+  } catch (e) {
+    console.error('OTP Send error:', e.message);
+  }
 
   res.json({
     ok: true,
     message: `ส่งรหัสยืนยัน OTP 6 หลักไปยังอีเมล ${cleanEmail} เรียบร้อยแล้ว`,
+    demoCode: otpCode,
   });
 });
 
-/** POST /api/auth/verify-otp — Verify OTP & Register User */
+/** POST /api/auth/verify-otp — Verify OTP & Register/Login User */
 app.post('/api/auth/verify-otp', async (req, res) => {
-  const { email, otp } = req.body;
-  if (!email || !otp) {
+  const { email, code, otp } = req.body;
+  const inputCode = String(code || otp || '').trim();
+
+  if (!email || !inputCode) {
     return res.status(400).json({ ok: false, error: 'กรุณากรอกอีเมลและรหัส OTP 6 หลัก' });
   }
 
@@ -1837,8 +1834,8 @@ app.post('/api/auth/verify-otp', async (req, res) => {
     return res.status(400).json({ ok: false, error: 'รหัส OTP หมดอายุหรือไม่มีข้อมูล กรุณากดส่งรหัสใหม่อีกครั้ง' });
   }
 
-  if (otpData.otp !== otp.trim()) {
-    return res.status(400).json({ ok: false, error: 'รหัส OTP ไม่ถูกต้อง กรุณาตรวจสอบรหัสในกล่องจดหมายอีเมลของคุณ' });
+  if (otpData.otp !== inputCode) {
+    return res.status(400).json({ ok: false, error: 'รหัส OTP ไม่ถูกต้อง กรุณาตรวจสอบรหัสอีกครั้ง' });
   }
 
   // Verification passed -> Save user preserving any existing PRO status & saved data
@@ -1847,7 +1844,6 @@ app.post('/api/auth/verify-otp', async (req, res) => {
 
   const newUser = {
     email: cleanEmail,
-    password: otpData.password,
     name: otpData.name || (existingUser ? existingUser.name : cleanEmail.split('@')[0]),
     isPro: isProStatus,
     watchlist: existingUser?.watchlist || ['AAPL', 'TSLA', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META'],
@@ -1864,7 +1860,7 @@ app.post('/api/auth/verify-otp', async (req, res) => {
   saveUsers();
   otpStore.delete(cleanEmail);
 
-  console.log(`✅ Email verified & password saved for -> ${cleanEmail} (isPro: ${isProStatus})`);
+  console.log(`✅ Email OTP verified success -> ${cleanEmail} (isPro: ${isProStatus})`);
 
   res.json({
     ok: true,
@@ -1874,8 +1870,9 @@ app.post('/api/auth/verify-otp', async (req, res) => {
       isPro: isProStatus,
       watchlist: newUser.watchlist,
       portfolio: newUser.portfolio,
+      emailVerified: true,
     },
-    message: 'ยืนยันอีเมลสำเร็จ สมัครสมาชิกและเข้าสู่ระบบเรียบร้อยแล้ว!',
+    message: 'ยืนยันอีเมลสำเร็จ เข้าสู่ระบบเรียบร้อยแล้ว!',
   });
 });
 
@@ -2409,90 +2406,6 @@ app.post('/api/telegram/webhook', async (req, res) => {
     );
   }
   res.json({ ok: true });
-});
-
-// ── EMAIL OTP VERIFICATION SYSTEM ────────────────────────────────────────────
-const otpStore = new Map(); // email -> { code, expiresAt, name }
-
-/** POST /api/auth/send-otp — Generate and send 6-digit OTP to user email */
-app.post('/api/auth/send-otp', async (req, res) => {
-  const { email, name } = req.body;
-  if (!email || !email.includes('@')) {
-    return res.status(400).json({ ok: false, error: 'โปรดระบุอีเมลให้ถูกต้อง' });
-  }
-
-  const cleanEmail = email.trim().toLowerCase();
-  const code = String(Math.floor(100000 + Math.random() * 900000)); // 6-digit code
-  const expiresAt = Date.now() + 5 * 60 * 1000; // 5 mins
-
-  otpStore.set(cleanEmail, { code, expiresAt, name: name || cleanEmail.split('@')[0] });
-
-  const mailSubject = `🔐 [StockWave Security] รหัสยืนยันตัวตน OTP ของคุณคือ ${code.slice(0, 3)}-${code.slice(3)}`;
-  const mailText =
-    `สวัสดีครับ คุณ ${name || cleanEmail.split('@')[0]},\n\n` +
-    `รหัสยืนยันตัวตน (OTP 6 หลัก) สำหรับเข้าสู่ระบบ StockWave Pro คือ:\n\n` +
-    `  ▶▶ [ ${code} ] ◀◀\n\n` +
-    `รหัสนี้มีอายุการใช้งาน 5 นาที โปรดอย่าเปิดเผยรหัสนี้แก่ผู้อื่น\n\n` +
-    `ขอบคุณที่ใช้งาน StockWave Pro`;
-
-  try {
-    await sendEmail(cleanEmail, mailSubject, mailText);
-  } catch {}
-
-  console.log(`📧 OTP Dispatched → Email:${cleanEmail} Code:${code}`);
-  res.json({
-    ok: true,
-    message: `ส่งรหัส OTP 6 หลักไปที่ ${cleanEmail} เรียบร้อยแล้ว`,
-    demoCode: code,
-  });
-});
-
-/** POST /api/auth/verify-otp — Validate 6-digit OTP code */
-app.post('/api/auth/verify-otp', (req, res) => {
-  const { email, code, name } = req.body;
-  if (!email || !code) {
-    return res.status(400).json({ ok: false, error: 'กรุณากรอกรหัส OTP ให้ครบ 6 หลัก' });
-  }
-
-  const cleanEmail = email.trim().toLowerCase();
-  const record = otpStore.get(cleanEmail);
-
-  if (!record) {
-    return res.status(400).json({ ok: false, error: 'ไม่พบรหัส OTP หรือรหัสหมดอายุแล้ว กรุณากดขอรหัสใหม่' });
-  }
-
-  if (Date.now() > record.expiresAt) {
-    otpStore.delete(cleanEmail);
-    return res.status(400).json({ ok: false, error: 'รหัส OTP หมดอายุแล้ว (เกิน 5 นาที) กรุณากดขอรหัสใหม่' });
-  }
-
-  if (record.code !== String(code).trim()) {
-    return res.status(400).json({ ok: false, error: 'รหัส OTP ไม่ถูกต้อง กรุณาตรวจสอบตัวเลขอีกครั้ง' });
-  }
-
-  // OTP Match Success!
-  otpStore.delete(cleanEmail);
-
-  const USERS_FILE = path.join(__dirname, 'registered_users.json');
-  let isPro = false;
-  try {
-    if (fs.existsSync(USERS_FILE)) {
-      const uList = JSON.parse(fs.readFileSync(USERS_FILE, 'utf8'));
-      const match = uList.find(u => u.email === cleanEmail);
-      if (match) isPro = Boolean(match.isPro);
-    }
-  } catch {}
-
-  console.log(`✅ OTP Verified Success → Email:${cleanEmail}`);
-  res.json({
-    ok: true,
-    user: {
-      email: cleanEmail,
-      name: record.name || name || cleanEmail.split('@')[0],
-      isPro,
-      emailVerified: true,
-    },
-  });
 });
 
 app.listen(PORT, () => {
