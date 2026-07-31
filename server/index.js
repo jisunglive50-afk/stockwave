@@ -2238,10 +2238,17 @@ app.post('/api/alerts', (req, res) => {
     return res.status(400).json({ ok: false, error: 'symbol and targetPrice required' });
   }
 
+  const cleanSymbol = symbol.trim().toUpperCase();
+  const alertId = req.body.id || `${cleanSymbol}_${direction}`;
+
   if (!alertsStore.has(userId)) {
     alertsStore.set(userId, new Map());
   }
-  alertsStore.get(userId).set(symbol.toUpperCase(), {
+
+  const userMap = alertsStore.get(userId);
+  userMap.set(alertId, {
+    id: alertId,
+    symbol: cleanSymbol,
     targetPrice: parseFloat(targetPrice),
     direction,
     channel,
@@ -2253,37 +2260,64 @@ app.post('/api/alerts', (req, res) => {
   });
   saveAlerts();
 
-  console.log(`✅ Alert saved → userId:${userId} channel:${channel} ${symbol} ${direction} $${targetPrice}`);
-  res.json({ ok: true, userId, channel, symbol, targetPrice, direction });
+  console.log(`✅ Alert saved → userId:${userId} channel:${channel} ${cleanSymbol} (${direction}) $${targetPrice} [id:${alertId}]`);
+  res.json({ ok: true, userId, channel, symbol: cleanSymbol, targetPrice, direction, id: alertId });
 });
 
 /** GET /api/alerts/:userId — List all active alerts for a user */
 app.get('/api/alerts/:userId', (req, res) => {
   const { userId } = req.params;
-  const symbolMap = alertsStore.get(String(userId));
-  if (!symbolMap) return res.json([]);
-  const list = [...symbolMap.entries()].map(([symbol, alert]) => ({ symbol, ...alert }));
+  const decodedUserId = decodeURIComponent(userId).trim().toLowerCase();
+
+  let userMap = null;
+  for (const [key, map] of alertsStore.entries()) {
+    if (key.trim().toLowerCase() === decodedUserId || key === userId) {
+      userMap = map;
+      break;
+    }
+  }
+
+  if (!userMap) return res.json([]);
+  const list = [...userMap.values()].map(alert => ({
+    id: alert.id || `${alert.symbol}_${alert.direction}`,
+    ...alert,
+  }));
   res.json(list);
 });
 
-/** DELETE /api/alerts/:userId/:symbol — Remove a specific alert */
-app.delete('/api/alerts/:userId/:symbol', (req, res) => {
-  const { userId, symbol } = req.params;
+/** DELETE /api/alerts/:userId/:symbolOrId — Remove a specific alert */
+app.delete('/api/alerts/:userId/:symbolOrId', (req, res) => {
+  const { userId, symbolOrId } = req.params;
   const decodedUserId = decodeURIComponent(userId).trim().toLowerCase();
-  const cleanSymbol = symbol.trim().toUpperCase();
+  const targetStr = symbolOrId.trim();
+  const reqDir = req.query?.direction;
 
   let deleted = false;
-  for (const [key, symbolMap] of alertsStore.entries()) {
+  for (const [key, userMap] of alertsStore.entries()) {
     if (key.trim().toLowerCase() === decodedUserId || key === userId) {
-      if (symbolMap.has(cleanSymbol)) {
-        symbolMap.delete(cleanSymbol);
-        deleted = true;
+      if (reqDir) {
+        const keyWithDir = `${targetStr.toUpperCase()}_${reqDir}`;
+        if (userMap.has(keyWithDir)) { userMap.delete(keyWithDir); deleted = true; }
+      }
+      if (userMap.has(targetStr)) { userMap.delete(targetStr); deleted = true; }
+      if (userMap.has(targetStr.toUpperCase())) { userMap.delete(targetStr.toUpperCase()); deleted = true; }
+
+      // Delete by key, id, or symbol matching
+      for (const [k, v] of userMap.entries()) {
+        if (
+          k === targetStr ||
+          v.id === targetStr ||
+          (reqDir && v.symbol === targetStr.toUpperCase() && v.direction === reqDir)
+        ) {
+          userMap.delete(k);
+          deleted = true;
+        }
       }
     }
   }
 
   saveAlerts();
-  console.log(`🗑️ Deleted alert → userId:${userId} symbol:${cleanSymbol} (success: ${deleted})`);
+  console.log(`🗑️ Deleted alert → userId:${userId} target:${targetStr} dir:${reqDir || 'any'} (success: ${deleted})`);
   res.json({ ok: true, deleted, message: 'ลบรายการแจ้งเตือนเรียบร้อยแล้ว' });
 });
 
