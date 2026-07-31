@@ -2323,19 +2323,32 @@ app.get('/api/telegram/verify', async (req, res) => {
 
 /** POST /api/telegram/config — Update Telegram Bot Token dynamically */
 app.post('/api/telegram/config', async (req, res) => {
-  const { token } = req.body;
+  const { token, chatId } = req.body;
   if (!token || !token.trim()) return res.status(400).json({ ok: false, error: 'กรุณากรอก Telegram Bot Token' });
   
   const cleanToken = token.trim();
   const botInfo = await fetchTelegramBotInfo(cleanToken);
   if (!botInfo || !botInfo.username) {
-    return res.status(400).json({ ok: false, error: 'Token ไม่ถูกต้อง หรือไม่สามารถเชื่อมต่อกับ Telegram API ได้' });
+    return res.status(400).json({ ok: false, error: 'Token ไม่ถูกต้อง หรือไม่สามารถเชื่อมต่อกับ Telegram API ได้ (โปรดตรวจสอบว่าคัดลอก Token มาครบถ้วน)' });
   }
 
   saveTelegramConfig(cleanToken);
+
+  // Send real test message to Telegram app immediately if chatId is provided
+  if (chatId) {
+    await sendTelegram(
+      chatId.trim(),
+      `🎉 *เปิดใช้งาน Telegram Bot สำเร็จ!*\n\n` +
+      `🤖 บอทระบบ: *@${botInfo.username}*\n` +
+      `📱 Chat ID ของคุณ: \`${chatId.trim()}\`\n\n` +
+      `✅ ข้อความนี้ยืนยันว่าระบบแจ้งเตือนราคาหุ้น StockWave สามารถส่งตรงเข้าแอป Telegram บนมือถือของคุณได้ 100% เรียบร้อยแล้ว!`,
+      cleanToken
+    );
+  }
+
   res.json({
     ok: true,
-    message: `บันทึก Telegram Bot Token สำเร็จ! บอทของคุณคือ @${botInfo.username}`,
+    message: `บันทึก Telegram Bot Token สำเร็จ! บอทของคุณคือ @${botInfo.username} (ส่งข้อความเข้าแอปเรียบร้อย)`,
     botUsername: botInfo.username,
     botName: botInfo.first_name,
     botLink: `https://t.me/${botInfo.username}`
