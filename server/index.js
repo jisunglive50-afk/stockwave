@@ -36,6 +36,33 @@ const PORT = 3001;
 let TELEGRAM_TOKEN = (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_BOT_TOKEN !== 'ใส่_Token_ของคุณ_ที่_นี่') ? process.env.TELEGRAM_BOT_TOKEN.trim() : '';
 const TELEGRAM_CONFIG_FILE = path.join(__dirname, 'telegram_config.json');
 
+let TELEGRAM_BOT_INFO = {
+  username: 'StockWaveAlertBot',
+  first_name: 'StockWave Alert Bot',
+};
+
+async function fetchTelegramBotInfo(tokenToUse = null) {
+  const token = (tokenToUse || TELEGRAM_TOKEN || '').trim();
+  if (!token || token === 'ใส่_Token_ของคุณ_ที่_นี่') {
+    return { username: 'StockWaveAlertBot', first_name: 'StockWave Alert Bot' };
+  }
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const data = await res.json();
+    if (data.ok && data.result) {
+      TELEGRAM_BOT_INFO = {
+        username: data.result.username || 'StockWaveAlertBot',
+        first_name: data.result.first_name || 'StockWave Alert Bot',
+      };
+      console.log(`✈️ Connected Telegram Bot: @${TELEGRAM_BOT_INFO.username} (${TELEGRAM_BOT_INFO.first_name})`);
+      return TELEGRAM_BOT_INFO;
+    }
+  } catch (e) {
+    console.warn('⚠️ Could not fetch Telegram Bot info:', e.message);
+  }
+  return TELEGRAM_BOT_INFO;
+}
+
 function loadTelegramConfig() {
   try {
     if (fs.existsSync(TELEGRAM_CONFIG_FILE)) {
@@ -50,6 +77,7 @@ function loadTelegramConfig() {
   }
 }
 loadTelegramConfig();
+fetchTelegramBotInfo();
 
 function saveTelegramConfig(token) {
   try {
@@ -2282,19 +2310,40 @@ app.get('/api/telegram/verify', async (req, res) => {
 });
 
 /** POST /api/telegram/config — Update Telegram Bot Token dynamically */
-app.post('/api/telegram/config', (req, res) => {
+app.post('/api/telegram/config', async (req, res) => {
   const { token } = req.body;
   if (!token || !token.trim()) return res.status(400).json({ ok: false, error: 'กรุณากรอก Telegram Bot Token' });
-  saveTelegramConfig(token.trim());
-  res.json({ ok: true, message: 'บันทึก Telegram Bot Token สำเร็จ' });
-});
+  
+  const cleanToken = token.trim();
+  const botInfo = await fetchTelegramBotInfo(cleanToken);
+  if (!botInfo || !botInfo.username) {
+    return res.status(400).json({ ok: false, error: 'Token ไม่ถูกต้อง หรือไม่สามารถเชื่อมต่อกับ Telegram API ได้' });
+  }
 
-/** GET /api/telegram/config — Get Telegram Bot Status */
-app.get('/api/telegram/config', (req, res) => {
+  saveTelegramConfig(cleanToken);
   res.json({
     ok: true,
-    configured: Boolean(TELEGRAM_TOKEN && TELEGRAM_TOKEN !== 'ใส่_Token_ของคุณ_ที่_นี่'),
-    maskedToken: TELEGRAM_TOKEN ? `${TELEGRAM_TOKEN.slice(0, 6)}...` : '',
+    message: `บันทึก Telegram Bot Token สำเร็จ! บอทของคุณคือ @${botInfo.username}`,
+    botUsername: botInfo.username,
+    botName: botInfo.first_name,
+    botLink: `https://t.me/${botInfo.username}`
+  });
+});
+
+/** GET /api/telegram/config — Get Telegram Bot Status & Details */
+app.get('/api/telegram/config', async (req, res) => {
+  const isConfigured = Boolean(TELEGRAM_TOKEN && TELEGRAM_TOKEN !== 'ใส่_Token_ของคุณ_ที่_นี่');
+  if (isConfigured && (!TELEGRAM_BOT_INFO || !TELEGRAM_BOT_INFO.username)) {
+    await fetchTelegramBotInfo();
+  }
+  const username = TELEGRAM_BOT_INFO.username || 'StockWaveAlertBot';
+  res.json({
+    ok: true,
+    configured: isConfigured,
+    maskedToken: TELEGRAM_TOKEN ? `${TELEGRAM_TOKEN.slice(0, 6)}...${TELEGRAM_TOKEN.slice(-4)}` : '',
+    botUsername: username,
+    botName: TELEGRAM_BOT_INFO.first_name || 'StockWave Alert Bot',
+    botLink: `https://t.me/${username}`,
   });
 });
 
