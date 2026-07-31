@@ -2221,14 +2221,17 @@ app.get('/api/admin/all-alerts', (req, res) => {
 
 /** POST /api/alerts — Save a price alert for a user */
 app.post('/api/alerts', (req, res) => {
-  const { chatId, phone, email, channel = 'sms', symbol, targetPrice, direction = 'below' } = req.body;
+  const { chatId, phone, email, channel = 'app_push', symbol, targetPrice, direction = 'below' } = req.body;
 
   // Build a stable userId that matches the channel being used
   let userId;
   if (channel === 'email' && email) userId = email.trim().toLowerCase();
   else if (channel === 'telegram' && chatId) userId = String(chatId).trim();
+  else if (channel === 'sms' && phone) userId = String(phone).trim();
+  else if (email && email.includes('@')) userId = email.trim().toLowerCase();
+  else if (chatId) userId = String(chatId).trim();
   else if (phone) userId = String(phone).trim();
-  else userId = 'default';
+  else userId = 'app_user';
 
   if (!symbol || targetPrice == null) {
     return res.status(400).json({ ok: false, error: 'symbol and targetPrice required' });
@@ -2272,6 +2275,17 @@ app.delete('/api/alerts/:userId/:symbol', (req, res) => {
     saveAlerts();
   }
   res.json({ ok: true });
+});
+
+/** DELETE /api/admin/alerts/clear-all — Clear all user alerts from server */
+app.delete('/api/admin/alerts/clear-all', verifyAdmin, (req, res) => {
+  alertsStore.clear();
+  try {
+    const ALERTS_FILE = path.join(__dirname, 'alerts_store.json');
+    if (fs.existsSync(ALERTS_FILE)) fs.unlinkSync(ALERTS_FILE);
+  } catch {}
+  console.log('🗑️ Admin cleared all price alerts!');
+  res.json({ ok: true, message: 'เคลียร์รายการแจ้งเตือนทั้งหมดเรียบร้อยแล้ว' });
 });
 
 /** POST /api/sms/send — Test SMS sending */
