@@ -2269,21 +2269,30 @@ app.get('/api/alerts/:userId', (req, res) => {
 /** DELETE /api/alerts/:userId/:symbol — Remove a specific alert */
 app.delete('/api/alerts/:userId/:symbol', (req, res) => {
   const { userId, symbol } = req.params;
-  const symbolMap = alertsStore.get(String(userId));
-  if (symbolMap) {
-    symbolMap.delete(symbol.toUpperCase());
-    if (symbolMap.size === 0) alertsStore.delete(String(userId));
-    saveAlerts();
+  const decodedUserId = decodeURIComponent(userId).trim().toLowerCase();
+  const cleanSymbol = symbol.trim().toUpperCase();
+
+  let deleted = false;
+  for (const [key, symbolMap] of alertsStore.entries()) {
+    if (key.trim().toLowerCase() === decodedUserId || key === userId) {
+      if (symbolMap.has(cleanSymbol)) {
+        symbolMap.delete(cleanSymbol);
+        deleted = true;
+      }
+    }
   }
-  res.json({ ok: true });
+
+  saveAlerts();
+  console.log(`🗑️ Deleted alert → userId:${userId} symbol:${cleanSymbol} (success: ${deleted})`);
+  res.json({ ok: true, deleted, message: 'ลบรายการแจ้งเตือนเรียบร้อยแล้ว' });
 });
 
 /** DELETE /api/admin/alerts/clear-all — Clear all user alerts from server */
 app.delete('/api/admin/alerts/clear-all', (req, res) => {
   alertsStore.clear();
   try {
-    const ALERTS_FILE = path.join(__dirname, 'alerts_store.json');
-    if (fs.existsSync(ALERTS_FILE)) fs.unlinkSync(ALERTS_FILE);
+    const ALERTS_FILE = path.join(__dirname, 'alerts.json');
+    if (fs.existsSync(ALERTS_FILE)) fs.writeFileSync(ALERTS_FILE, '{}');
   } catch {}
   console.log('🗑️ Admin cleared all price alerts!');
   res.json({ ok: true, message: 'เคลียร์รายการแจ้งเตือนทั้งหมดเรียบร้อยแล้ว' });
