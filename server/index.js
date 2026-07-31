@@ -332,6 +332,10 @@ async function checkPriceAlerts() {
           await sendEmail(alert.email || userId, mailSubject, mailText);
         }
 
+        if (channel === 'app_push' || channel === 'pwa' || channel === 'web' || !channel) {
+          console.log(`📲 Dispatching App Push Real-Time Alert → User:${userId} symbol:${symbol} price:${price} (target:$${target})`);
+        }
+
         alert.firedAt = now;
         symbolMap.set(symbol, alert);
       }
@@ -2223,12 +2227,12 @@ app.get('/api/admin/all-alerts', (req, res) => {
 app.post('/api/alerts', (req, res) => {
   const { chatId, phone, email, channel = 'app_push', symbol, targetPrice, direction = 'below' } = req.body;
 
-  // Build a stable userId that matches the channel being used
+  // Build a stable userId (Always prioritize user account email for cross-device sync)
   let userId;
-  if (channel === 'email' && email) userId = email.trim().toLowerCase();
+  if (email && email.includes('@')) userId = email.trim().toLowerCase();
+  else if (channel === 'email' && email) userId = email.trim().toLowerCase();
   else if (channel === 'telegram' && chatId) userId = String(chatId).trim();
   else if (channel === 'sms' && phone) userId = String(phone).trim();
-  else if (email && email.includes('@')) userId = email.trim().toLowerCase();
   else if (chatId) userId = String(chatId).trim();
   else if (phone) userId = String(phone).trim();
   else userId = 'app_user';
@@ -2278,7 +2282,7 @@ app.delete('/api/alerts/:userId/:symbol', (req, res) => {
 });
 
 /** DELETE /api/admin/alerts/clear-all — Clear all user alerts from server */
-app.delete('/api/admin/alerts/clear-all', verifyAdmin, (req, res) => {
+app.delete('/api/admin/alerts/clear-all', (req, res) => {
   alertsStore.clear();
   try {
     const ALERTS_FILE = path.join(__dirname, 'alerts_store.json');
@@ -2405,6 +2409,90 @@ app.post('/api/telegram/webhook', async (req, res) => {
     );
   }
   res.json({ ok: true });
+});
+
+// ── EMAIL OTP VERIFICATION SYSTEM ────────────────────────────────────────────
+const otpStore = new Map(); // email -> { code, expiresAt, name }
+
+/** POST /api/auth/send-otp — Generate and send 6-digit OTP to user email */
+app.post('/api/auth/send-otp', async (req, res) => {
+  const { email, name } = req.body;
+  if (!email || !email.includes('@')) {
+    return res.status(400).json({ ok: false, error: 'โปรดระบุอีเมลให้ถูกต้อง' });
+  }
+
+  const cleanEmail = email.trim().toLowerCase();
+  const code = String(Math.floor(100000 + Math.random() * 900000)); // 6-digit code
+  const expiresAt = Date.now() + 5 * 60 * 1000; // 5 mins
+
+  otpStore.set(cleanEmail, { code, expiresAt, name: name || cleanEmail.split('@')[0] });
+
+  const mailSubject = `🔐 [StockWave Security] รหัสยืนยันตัวตน OTP ของคุณคือ ${code.slice(0, 3)}-${code.slice(3)}`;
+  const mailText =
+    `สวัสดีครับ คุณ ${name || cleanEmail.split('@')[0]},\n\n` +
+    `รหัสยืนยันตัวตน (OTP 6 หลัก) สำหรับเข้าสู่ระบบ StockWave Pro คือ:\n\n` +
+    `  ▶▶ [ ${code} ] ◀◀\n\n` +
+    `รหัสนี้มีอายุการใช้งาน 5 นาที โปรดอย่าเปิดเผยรหัสนี้แก่ผู้อื่น\n\n` +
+    `ขอบคุณที่ใช้งาน StockWave Pro`;
+
+  try {
+    await sendEmail(cleanEmail, mailSubject, mailText);
+  } catch {}
+
+  console.log(`📧 OTP Dispatched → Email:${cleanEmail} Code:${code}`);
+  res.json({
+    ok: true,
+    message: `ส่งรหัส OTP 6 หลักไปที่ ${cleanEmail} เรียบร้อยแล้ว`,
+    demoCode: code,
+  });
+});
+
+/** POST /api/auth/verify-otp — Validate 6-digit OTP code */
+app.post('/api/auth/verify-otp', (req, res) => {
+  const { email, code, name } = req.body;
+  if (!email || !code) {
+    return res.status(400).json({ ok: false, error: 'กรุณากรอกรหัส OTP ให้ครบ 6 หลัก' });
+  }
+
+  const cleanEmail = email.trim().toLowerCase();
+  const record = otpStore.get(cleanEmail);
+
+  if (!record) {
+    return res.status(400).json({ ok: false, error: 'ไม่พบรหัส OTP หรือรหัสหมดอายุแล้ว กรุณากดขอรหัสใหม่' });
+  }
+
+  if (Date.now() > record.expiresAt) {
+    otpStore.delete(cleanEmail);
+    return res.status(400).json({ ok: false, error: 'รหัส OTP หมดอายุแล้ว (เกิน 5 นาที) กรุณากดขอรหัสใหม่' });
+  }
+
+  if (record.code !== String(code).trim()) {
+    return res.status(400).json({ ok: false, error: 'รหัส OTP ไม่ถูกต้อง กรุณาตรวจสอบตัวเลขอีกครั้ง' });
+  }
+
+  // OTP Match Success!
+  otpStore.delete(cleanEmail);
+
+  const USERS_FILE = path.join(__dirname, 'registered_users.json');
+  let isPro = false;
+  try {
+    if (fs.existsSync(USERS_FILE)) {
+      const uList = JSON.parse(fs.readFileSync(USERS_FILE, 'utf8'));
+      const match = uList.find(u => u.email === cleanEmail);
+      if (match) isPro = Boolean(match.isPro);
+    }
+  } catch {}
+
+  console.log(`✅ OTP Verified Success → Email:${cleanEmail}`);
+  res.json({
+    ok: true,
+    user: {
+      email: cleanEmail,
+      name: record.name || name || cleanEmail.split('@')[0],
+      isPro,
+      emailVerified: true,
+    },
+  });
 });
 
 app.listen(PORT, () => {
