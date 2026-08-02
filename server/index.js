@@ -2019,6 +2019,22 @@ app.post('/api/auth/subscribe-pro', async (req, res) => {
   });
 });
 
+/** GET /health & /api/health — Health check endpoint for uptime monitors */
+app.get(['/health', '/api/health'], (req, res) => {
+  res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Self-Ping keep-alive (Pings public URL every 8 minutes directly on Render free tier — zero signup needed)
+const PING_URL = (process.env.RENDER_EXTERNAL_URL || process.env.SELF_PING_URL || 'https://stockwave-api-v2.onrender.com').replace(/\/+$/, '');
+setInterval(async () => {
+  try {
+    await fetch(`${PING_URL}/health`);
+    console.log(`⏰ Self-ping sent to ${PING_URL}/health`);
+  } catch (e) {
+    console.warn(`⚠️ Self-ping failed:`, e.message);
+  }
+}, 8 * 60 * 1000); // 8 mins
+
 /** POST /api/auth/sync-user — Sync user session to server store */
 app.post('/api/auth/sync-user', (req, res) => {
   const { email, name, isPro, watchlist, portfolio } = req.body;

@@ -7,7 +7,7 @@
       "phone": "0645342236",
       "chatId": null,
       "createdAt": 1784813291609,
-      "firedAt": 1785004801721
+      "firedAt": 1785595455769
     },
     "AAPL": {
       "targetPrice": 319.36,
@@ -16,7 +16,7 @@
       "phone": "0645342236",
       "chatId": null,
       "createdAt": 1784814429284,
-      "firedAt": null
+      "firedAt": 1785595455769
     },
     "PLTR": {
       "targetPrice": 121.51,
@@ -37,7 +37,7 @@
       "chatId": null,
       "email": "sangsuragul.50@gmail.com",
       "createdAt": 1784814755094,
-      "firedAt": null
+      "firedAt": 1785595455769
     },
     "PLTR": {
       "targetPrice": 121.85,
