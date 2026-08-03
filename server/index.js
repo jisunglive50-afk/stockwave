@@ -281,11 +281,19 @@ async function checkPriceAlerts() {
     const results = await Promise.allSettled(
       [...allSymbols].map(sym => yf.quote(sym, {}, { validateResult: false }))
     );
+    const getEffectivePriceVal = (q) => {
+      if (!q) return null;
+      const stateUpper = String(q.marketState || '').toUpperCase();
+      if (stateUpper.includes('PRE') && q.preMarketPrice != null) return q.preMarketPrice;
+      if ((stateUpper.includes('POST') || stateUpper === 'CLOSED') && q.postMarketPrice != null) return q.postMarketPrice;
+      return q.regularMarketPrice ?? q.postMarketPrice ?? q.preMarketPrice ?? null;
+    };
+
     for (const r of results) {
       if (r.status === 'fulfilled' && r.value) {
         const q = r.value;
         if (q?.symbol) {
-          priceMap[q.symbol.toUpperCase()] = q.regularMarketPrice ?? q.preMarketPrice ?? null;
+          priceMap[q.symbol.toUpperCase()] = getEffectivePriceVal(q);
         }
       }
     }
