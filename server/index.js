@@ -2311,25 +2311,19 @@ app.get('/api/alerts/:userId', (req, res) => {
 app.delete('/api/alerts/:userId/:symbolOrId', (req, res) => {
   const { userId, symbolOrId } = req.params;
   const decodedUserId = decodeURIComponent(userId).trim().toLowerCase();
-  const targetStr = symbolOrId.trim();
-  const reqDir = req.query?.direction;
+  const targetStr = symbolOrId.trim().toUpperCase();
 
   let deleted = false;
   for (const [key, userMap] of alertsStore.entries()) {
-    if (key.trim().toLowerCase() === decodedUserId || key === userId) {
-      if (reqDir) {
-        const keyWithDir = `${targetStr.toUpperCase()}_${reqDir}`;
-        if (userMap.has(keyWithDir)) { userMap.delete(keyWithDir); deleted = true; }
-      }
-      if (userMap.has(targetStr)) { userMap.delete(targetStr); deleted = true; }
-      if (userMap.has(targetStr.toUpperCase())) { userMap.delete(targetStr.toUpperCase()); deleted = true; }
-
-      // Delete by key, id, or symbol matching
-      for (const [k, v] of userMap.entries()) {
+    const keyClean = key.trim().toLowerCase();
+    if (keyClean === decodedUserId || keyClean.includes(decodedUserId) || decodedUserId.includes(keyClean)) {
+      for (const [k, v] of Array.from(userMap.entries())) {
+        const symClean = (v.symbol || '').toUpperCase();
         if (
-          k === targetStr ||
-          v.id === targetStr ||
-          (reqDir && v.symbol === targetStr.toUpperCase() && v.direction === reqDir)
+          k.toUpperCase() === targetStr ||
+          k.toUpperCase().startsWith(targetStr) ||
+          v.id === symbolOrId ||
+          symClean === targetStr
         ) {
           userMap.delete(k);
           deleted = true;
@@ -2339,7 +2333,7 @@ app.delete('/api/alerts/:userId/:symbolOrId', (req, res) => {
   }
 
   saveAlerts();
-  console.log(`🗑️ Deleted alert → userId:${userId} target:${targetStr} dir:${reqDir || 'any'} (success: ${deleted})`);
+  console.log(`🗑️ Deleted alert → userId:${userId} target:${targetStr} (success: ${deleted})`);
   res.json({ ok: true, deleted, message: 'ลบรายการแจ้งเตือนเรียบร้อยแล้ว' });
 });
 
