@@ -9,7 +9,7 @@ import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import YahooFinance from 'yahoo-finance2';
+import yahooFinancePackage from 'yahoo-finance2';
 import nodemailer from 'nodemailer';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -28,7 +28,13 @@ try {
   }
 } catch {}
 
-const yf = new YahooFinance({ suppressNotices: ['yahooSurvey', 'ripHistorical'] });
+const yf = yahooFinancePackage?.default || yahooFinancePackage;
+try {
+  if (typeof yf?.setGlobalConfig === 'function') {
+    yf.setGlobalConfig({ suppressNotices: ['yahooSurvey', 'ripHistorical'] });
+  }
+} catch {}
+
 const app = express();
 const PORT = 3001;
 
