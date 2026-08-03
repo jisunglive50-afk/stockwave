@@ -268,7 +268,11 @@ async function checkPriceAlerts() {
 
   const allSymbols = new Set();
   for (const symbolMap of alertsStore.values()) {
-    for (const sym of symbolMap.keys()) allSymbols.add(sym);
+    for (const alert of symbolMap.values()) {
+      if (alert && alert.symbol) {
+        allSymbols.add(alert.symbol.toUpperCase());
+      }
+    }
   }
   if (!allSymbols.size) return;
 
@@ -280,7 +284,9 @@ async function checkPriceAlerts() {
     for (const r of results) {
       if (r.status === 'fulfilled' && r.value) {
         const q = r.value;
-        priceMap[q.symbol] = q.regularMarketPrice ?? q.preMarketPrice ?? null;
+        if (q?.symbol) {
+          priceMap[q.symbol.toUpperCase()] = q.regularMarketPrice ?? q.preMarketPrice ?? null;
+        }
       }
     }
   } catch (e) {
@@ -291,8 +297,9 @@ async function checkPriceAlerts() {
   const now = Date.now();
 
   for (const [userId, symbolMap] of alertsStore) {
-    for (const [symbol, alert] of symbolMap) {
-      const price = priceMap[symbol];
+    for (const [alertKey, alert] of symbolMap) {
+      const sym = (alert.symbol || alertKey).toUpperCase();
+      const price = priceMap[sym];
       if (price == null) continue;
 
       const target = parseFloat(alert.targetPrice);
@@ -304,20 +311,22 @@ async function checkPriceAlerts() {
       const cooldownMs = 30 * 60 * 1000;
       if (triggered && (!alert.firedAt || now - alert.firedAt > cooldownMs)) {
         const thaiTime = new Date().toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' });
-        const dirText  = dir === 'below' ? 'แตะแนวรับ' : 'ทะลุแนวต้าน';
+        const isAbove  = dir === 'above';
+        const dirText  = isAbove ? 'ทะลุแนวต้าน' : 'แตะแนวรับ';
+        const icon     = isAbove ? '📈' : '📉';
 
         const channel = alert.channel || (alert.phone ? 'sms' : 'telegram');
 
         if (channel === 'sms' || alert.phone) {
-          const smsText = `[StockWave Alert] 🚨 ${symbol} ${dirText}! ราคาแตะเป้า $${target.toFixed(2)} (ล่าสุด $${price.toFixed(2)}) เวลา ${thaiTime}`;
-          console.log(`📲 Dispatching SMS → Phone:${alert.phone || userId} symbol:${symbol} price:${price}`);
+          const smsText = `[StockWave Alert] 🚨 ${sym} ${dirText}! ราคาแตะเป้า $${target.toFixed(2)} (ล่าสุด $${price.toFixed(2)}) เวลา ${thaiTime}`;
+          console.log(`📲 Dispatching SMS → Phone:${alert.phone || userId} symbol:${sym} price:${price}`);
           await sendSMS(alert.phone || userId, smsText);
         }
 
         if (channel === 'telegram' || userId.match(/^\d+$/)) {
           const tgText =
             `🚨 *StockWave แจ้งเตือน!*\n\n` +
-            `📉 *${symbol}* ${dirText}!\n\n` +
+            `${icon} *${sym}* ${dirText}!\n\n` +
             `📌 ราคาเป้าหมายที่ตั้งไว้: *$${target.toFixed(2)}*\n` +
             `📊 ราคาปัจจุบัน: *$${price.toFixed(2)}*\n` +
             `⏰ เวลา: ${thaiTime}\n\n` +
@@ -326,24 +335,24 @@ async function checkPriceAlerts() {
         }
 
         if (channel === 'email' || alert.email || userId.includes('@')) {
-          const mailSubject = `[StockWave Alert] 🚨 ${symbol} ${dirText}! ราคาแตะเป้า $${target.toFixed(2)}`;
+          const mailSubject = `[StockWave Alert] 🚨 ${sym} ${dirText}! ราคาแตะเป้า $${target.toFixed(2)}`;
           const mailText =
             `🚨 StockWave แจ้งเตือนราคาหุ้น!\n\n` +
-            `📉 ${symbol} ${dirText}!\n` +
+            `${icon} ${sym} ${dirText}!\n` +
             `📌 ราคาเป้าหมายที่ตั้งไว้: $${target.toFixed(2)}\n` +
             `📊 ราคาปัจจุบัน: $${price.toFixed(2)}\n` +
             `⏰ เวลา: ${thaiTime}\n\n` +
             `— StockWave Alert System`;
-          console.log(`📧 Dispatching Email → To:${alert.email || userId} symbol:${symbol} price:${price}`);
+          console.log(`📧 Dispatching Email → To:${alert.email || userId} symbol:${sym} price:${price}`);
           await sendEmail(alert.email || userId, mailSubject, mailText);
         }
 
         if (channel === 'app_push' || channel === 'pwa' || channel === 'web' || !channel) {
-          console.log(`📲 Dispatching App Push Real-Time Alert → User:${userId} symbol:${symbol} price:${price} (target:$${target})`);
+          console.log(`📲 Dispatching App Push Real-Time Alert → User:${userId} symbol:${sym} price:${price} (target:$${target})`);
         }
 
         alert.firedAt = now;
-        symbolMap.set(symbol, alert);
+        symbolMap.set(alertKey, alert);
       }
     }
   }
@@ -1202,6 +1211,7 @@ app.get('/api/news-all', async (req, res) => {
           publisher: item.publisher || 'Reuters / Financial News',
           link: item.link,
           time: formatNewsDate(item.providerPublishTime),
+          providerPublishTime: item.providerPublishTime ? (typeof item.providerPublishTime === 'number' ? (item.providerPublishTime < 1e12 ? item.providerPublishTime * 1000 : item.providerPublishTime) : new Date(item.providerPublishTime).getTime()) : Date.now(),
           thumbnail,
           relatedTickers: item.relatedTickers || [],
           sentiment: sentimentObj.sentiment,
@@ -1658,6 +1668,7 @@ function analyzeNewsImpact(title = '', summary = '') {
           publisher: item.publisher || 'Yahoo Finance',
           link: item.link,
           time: formatNewsDate(item.providerPublishTime),
+          providerPublishTime: item.providerPublishTime ? (typeof item.providerPublishTime === 'number' ? (item.providerPublishTime < 1e12 ? item.providerPublishTime * 1000 : item.providerPublishTime) : new Date(item.providerPublishTime).getTime()) : Date.now(),
           thumbnail,
           relatedTickers: [symUpper],
           sentiment: sentimentObj.sentiment,
