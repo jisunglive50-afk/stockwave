@@ -1682,6 +1682,51 @@ function analyzeNewsImpact(title = '', summary = '') {
 });
 
 
+app.post('/api/auth/sync-user', (req, res) => {
+  const { email, name, isPro, watchlist, portfolio } = req.body;
+  if (!email) return res.status(400).json({ ok: false, error: 'Email is required' });
+
+  const cleanEmail = email.trim().toLowerCase();
+  let user = usersStore.get(cleanEmail);
+
+  if (!user) {
+    user = {
+      email: cleanEmail,
+      name: name || cleanEmail.split('@')[0],
+      isPro: Boolean(isPro),
+      watchlist: watchlist || ['AAPL', 'TSLA', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META'],
+      portfolio: portfolio || [
+        { symbol: 'AAPL', qty: 10, avgCost: 178.50 },
+        { symbol: 'NVDA', qty: 5, avgCost: 890.00 },
+        { symbol: 'TSLA', qty: 8, avgCost: 245.00 },
+      ],
+      createdAt: Date.now(),
+    };
+  } else {
+    if (name) user.name = name;
+    if (Array.isArray(watchlist)) user.watchlist = watchlist;
+    if (Array.isArray(portfolio)) user.portfolio = portfolio;
+  }
+  usersStore.set(cleanEmail, user);
+  saveUsers();
+  res.json({
+    ok: true,
+    user: {
+      email: user.email,
+      name: user.name,
+      isPro: Boolean(user.isPro),
+      proPlan: user.proPlan || null,
+      proExpiryDate: user.proExpiryDate || null,
+      watchlist: user.watchlist || ['AAPL', 'TSLA', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META'],
+      portfolio: user.portfolio || [
+        { symbol: 'AAPL', qty: 10, avgCost: 178.50 },
+        { symbol: 'NVDA', qty: 5, avgCost: 890.00 },
+        { symbol: 'TSLA', qty: 8, avgCost: 245.00 },
+      ],
+    }
+  });
+});
+
 /** GET /api/news-full-content — Comprehensive Multi-Section Deep News Analysis */
 
 app.get('/api/news-full-content', async (req, res) => {
@@ -2061,10 +2106,7 @@ app.post('/api/auth/sync-user', (req, res) => {
       createdAt: Date.now(),
     };
   } else {
-    // Preserve server's isPro status if server already set isPro to true!
-    if (isPro === true) {
-      user.isPro = true;
-    }
+    // Note: Do NOT override user.isPro here; server store (managed by admin) is authoritative.
     if (name) user.name = name;
     if (Array.isArray(watchlist)) user.watchlist = watchlist;
     if (Array.isArray(portfolio)) user.portfolio = portfolio;
@@ -2077,6 +2119,8 @@ app.post('/api/auth/sync-user', (req, res) => {
       email: user.email,
       name: user.name,
       isPro: Boolean(user.isPro),
+      proPlan: user.proPlan || null,
+      proExpiryDate: user.proExpiryDate || null,
       watchlist: user.watchlist || ['AAPL', 'TSLA', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META'],
       portfolio: user.portfolio || [
         { symbol: 'AAPL', qty: 10, avgCost: 178.50 },
