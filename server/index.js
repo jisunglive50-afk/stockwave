@@ -11,6 +11,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import yahooFinancePackage from 'yahoo-finance2';
 import nodemailer from 'nodemailer';
+import webpush from 'web-push';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -253,13 +254,125 @@ async function sendEmail(to, subject, text) {
   console.log(`💬 Message: ${text}`);
   console.log(`📧 ───────────────────────────────────────────────\n`);
 
-  return {
-    ok: true,
-    simulated: true,
-    real: false,
-    to,
-    message: 'ยังไม่ได้ใส่ App Password ใน .env ระบบจึงรันในโหมดจำลอง (Console Simulation)',
-  };
+}
+
+// ─── Web Push Notification Engine (VAPID + Service Worker) ────────────────────
+const VAPID_KEYS_FILE = path.join(__dirname, 'vapid_keys.json');
+let VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
+let VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
+
+function initVapidKeys() {
+  if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) return;
+  try {
+    if (fs.existsSync(VAPID_KEYS_FILE)) {
+      const keys = JSON.parse(fs.readFileSync(VAPID_KEYS_FILE, 'utf8'));
+      VAPID_PUBLIC_KEY = keys.publicKey;
+      VAPID_PRIVATE_KEY = keys.privateKey;
+    } else {
+      const newKeys = webpush.generateVAPIDKeys();
+      VAPID_PUBLIC_KEY = newKeys.publicKey;
+      VAPID_PRIVATE_KEY = newKeys.privateKey;
+      fs.writeFileSync(VAPID_KEYS_FILE, JSON.stringify(newKeys, null, 2));
+      console.log('🔑 Generated new VAPID keys for Web Push Notifications');
+    }
+  } catch (e) {
+    console.warn('⚠️ Could not load or generate VAPID keys:', e.message);
+  }
+}
+initVapidKeys();
+
+if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+  try {
+    webpush.setVapidDetails(
+      'mailto:support@stockwave.app',
+      VAPID_PUBLIC_KEY,
+      VAPID_PRIVATE_KEY
+    );
+    console.log('📲 Web Push VAPID engine initialized successfully');
+  } catch (e) {
+    console.warn('⚠️ Web Push VAPID init error:', e.message);
+  }
+}
+
+const PUSH_SUBS_FILE = path.join(__dirname, 'push_subscriptions.json');
+const pushSubscriptionsStore = new Map();
+
+function loadPushSubscriptions() {
+  try {
+    if (fs.existsSync(PUSH_SUBS_FILE)) {
+      const raw = JSON.parse(fs.readFileSync(PUSH_SUBS_FILE, 'utf8'));
+      for (const [userId, subs] of Object.entries(raw)) {
+        if (Array.isArray(subs)) {
+          pushSubscriptionsStore.set(userId, subs);
+        }
+      }
+      console.log(`📂 Loaded push subscriptions for ${pushSubscriptionsStore.size} user(s) from disk`);
+    }
+  } catch (e) {
+    console.warn('⚠️ Could not load push_subscriptions.json:', e.message);
+  }
+}
+
+function savePushSubscriptions() {
+  try {
+    const obj = {};
+    for (const [userId, subs] of pushSubscriptionsStore) {
+      obj[userId] = subs;
+    }
+    fs.writeFileSync(PUSH_SUBS_FILE, JSON.stringify(obj, null, 2));
+  } catch (e) {
+    console.warn('⚠️ Could not save push_subscriptions.json:', e.message);
+  }
+}
+
+loadPushSubscriptions();
+
+async function sendWebPushToUser(userId, payloadObj) {
+  const userSubs = pushSubscriptionsStore.get(userId) || [];
+  const fallbackSubs = (userId !== 'guest' && userId !== 'all') ? (pushSubscriptionsStore.get('guest') || []) : [];
+  const subsMap = new Map();
+  
+  for (const s of [...userSubs, ...fallbackSubs]) {
+    if (s && s.endpoint) subsMap.set(s.endpoint, s);
+  }
+
+  const allTargetSubs = Array.from(subsMap.values());
+  if (!allTargetSubs.length) {
+    return { ok: false, error: 'ยังไม่มีอุปกรณ์ที่ลงทะเบียนรับ Web Push สำหรับผู้ใช้นี้' };
+  }
+
+  const payload = JSON.stringify({
+    title: payloadObj.title || '🚨 StockWave Notification',
+    body: payloadObj.body || 'มีการแจ้งเตือนใหม่จาก StockWave',
+    icon: '/stockwave_logo.png',
+    badge: '/stockwave_logo.png',
+    url: payloadObj.url || '/',
+    tag: payloadObj.tag || 'stockwave-alert'
+  });
+
+  let sentCount = 0;
+  const validUserSubs = [];
+
+  for (const sub of allTargetSubs) {
+    try {
+      await webpush.sendNotification(sub, payload);
+      sentCount++;
+      validUserSubs.push(sub);
+    } catch (err) {
+      console.warn(`⚠️ Web Push Send Failure (${sub.endpoint?.slice(0, 35)}...):`, err.message);
+      if (err.statusCode !== 404 && err.statusCode !== 410) {
+        validUserSubs.push(sub);
+      }
+    }
+  }
+
+  if (userId) {
+    pushSubscriptionsStore.set(userId, validUserSubs);
+    savePushSubscriptions();
+  }
+
+  console.log(`📲 Web Push Dispatched → User:${userId} | Sent to ${sentCount} device(s)`);
+  return { ok: true, sentCount };
 }
 
 // ─── Background Price Alert Checker (every 5 min) ────────────────────────────
@@ -357,6 +470,12 @@ async function checkPriceAlerts() {
 
         if (channel === 'app_push' || channel === 'pwa' || channel === 'web' || !channel) {
           console.log(`📲 Dispatching App Push Real-Time Alert → User:${userId} symbol:${sym} price:${price} (target:$${target})`);
+          await sendWebPushToUser(userId, {
+            title: `🚨 StockWave: ${sym} ${dirText}!`,
+            body: `${icon} ${sym} ราคาแตะเป้า $${target.toFixed(2)} (ล่าสุด $${price.toFixed(2)}) เวลา ${thaiTime}`,
+            url: `/stock/${sym}`,
+            tag: `alert-${sym}-${target}`
+          });
         }
 
         alert.firedAt = now;
@@ -397,6 +516,54 @@ app.get('/', (req, res) => {
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', uptime: process.uptime() });
+});
+
+// ─── Web Push REST API Routes ────────────────────────────────────────────────
+app.get('/api/push/public-key', (req, res) => {
+  if (!VAPID_PUBLIC_KEY) {
+    return res.status(500).json({ ok: false, error: 'ยังไม่ได้ตั้งค่า VAPID Public Key บนเซิร์ฟเวอร์' });
+  }
+  res.json({ ok: true, publicKey: VAPID_PUBLIC_KEY });
+});
+
+app.post('/api/push/subscribe', (req, res) => {
+  const { userId = 'guest', subscription } = req.body || {};
+  if (!subscription || !subscription.endpoint) {
+    return res.status(400).json({ ok: false, error: 'ข้อมูล Push Subscription ไม่ถูกต้อง' });
+  }
+
+  const existing = pushSubscriptionsStore.get(userId) || [];
+  const updated = existing.filter(s => s.endpoint !== subscription.endpoint);
+  updated.push(subscription);
+  pushSubscriptionsStore.set(userId, updated);
+  savePushSubscriptions();
+
+  console.log(`✅ Web Push Subscribed → User: ${userId} (${updated.length} active device(s))`);
+  res.json({ ok: true, message: 'ลงทะเบียนรับ Web Push Notification สำเร็จ' });
+});
+
+app.post('/api/push/unsubscribe', (req, res) => {
+  const { userId = 'guest', endpoint } = req.body || {};
+  if (!endpoint) return res.status(400).json({ ok: false, error: 'Endpoint is required' });
+
+  const existing = pushSubscriptionsStore.get(userId) || [];
+  const updated = existing.filter(s => s.endpoint !== endpoint);
+  pushSubscriptionsStore.set(userId, updated);
+  savePushSubscriptions();
+
+  console.log(`🔴 Web Push Unsubscribed → User: ${userId}`);
+  res.json({ ok: true, message: 'ยกเลิกการรับ Web Push เรียบร้อย' });
+});
+
+app.post('/api/push/send-test', async (req, res) => {
+  const { userId = 'guest' } = req.body || {};
+  const result = await sendWebPushToUser(userId, {
+    title: '🔔 ทดสอบระบบ StockWave Web Push',
+    body: 'ยินดีด้วย! ระบบแจ้งเตือน Web Push Notification ของคุณพร้อมใช้งานแล้ว',
+    url: '/',
+    tag: 'test-push-' + Date.now()
+  });
+  res.json(result);
 });
 
 // High Quality Stock Cover Thumbnails Varied Pools per Ticker
