@@ -328,16 +328,42 @@ function savePushSubscriptions() {
 loadPushSubscriptions();
 
 async function sendWebPushToUser(userId, payloadObj) {
-  const userSubs = pushSubscriptionsStore.get(userId) || [];
-  const fallbackSubs = (userId !== 'guest' && userId !== 'all') ? (pushSubscriptionsStore.get('guest') || []) : [];
+  // Collect candidate subscriptions: exact userId → guest → app_user → all known
   const subsMap = new Map();
-  
-  for (const s of [...userSubs, ...fallbackSubs]) {
-    if (s && s.endpoint) subsMap.set(s.endpoint, s);
+
+  // 1. Exact userId match
+  const userSubs = pushSubscriptionsStore.get(userId) || [];
+  for (const s of userSubs) {
+    if (s?.endpoint) subsMap.set(s.endpoint, s);
+  }
+
+  // 2. Fallback: 'guest' subscriptions (most common for non-logged-in users)
+  if (userId !== 'guest') {
+    for (const s of (pushSubscriptionsStore.get('guest') || [])) {
+      if (s?.endpoint) subsMap.set(s.endpoint, s);
+    }
+  }
+
+  // 3. Fallback: 'app_user' subscriptions
+  if (userId !== 'app_user') {
+    for (const s of (pushSubscriptionsStore.get('app_user') || [])) {
+      if (s?.endpoint) subsMap.set(s.endpoint, s);
+    }
+  }
+
+  // 4. Last resort: broadcast to ALL known subscriptions
+  //    This ensures delivery even when userId mapping is mismatched
+  if (subsMap.size === 0) {
+    for (const [, subs] of pushSubscriptionsStore) {
+      for (const s of subs) {
+        if (s?.endpoint) subsMap.set(s.endpoint, s);
+      }
+    }
   }
 
   const allTargetSubs = Array.from(subsMap.values());
   if (!allTargetSubs.length) {
+    console.warn(`⚠️ No push subscriptions found for user:${userId} (total registered: ${pushSubscriptionsStore.size} user(s))`);
     return { ok: false, error: 'ยังไม่มีอุปกรณ์ที่ลงทะเบียนรับ Web Push สำหรับผู้ใช้นี้' };
   }
 
@@ -351,27 +377,36 @@ async function sendWebPushToUser(userId, payloadObj) {
   });
 
   let sentCount = 0;
-  const validUserSubs = [];
+  const expiredEndpoints = new Set();
 
   for (const sub of allTargetSubs) {
     try {
-      await webpush.sendNotification(sub, payload);
+      await webpush.sendNotification(sub, payload, {
+        TTL: 86400,          // Keep message in push queue for 24 hours
+        urgency: 'high',     // Tell push service this is a high-priority alert
+      });
       sentCount++;
-      validUserSubs.push(sub);
     } catch (err) {
-      console.warn(`⚠️ Web Push Send Failure (${sub.endpoint?.slice(0, 35)}...):`, err.message);
-      if (err.statusCode !== 404 && err.statusCode !== 410) {
-        validUserSubs.push(sub);
+      console.warn(`⚠️ Web Push Send Failure (${sub.endpoint?.slice(0, 50)}...):`, err.statusCode || err.message);
+      // 404 / 410 = subscription expired or unsubscribed → prune it
+      if (err.statusCode === 404 || err.statusCode === 410) {
+        expiredEndpoints.add(sub.endpoint);
       }
     }
   }
 
-  if (userId) {
-    pushSubscriptionsStore.set(userId, validUserSubs);
+  // Prune expired endpoints from ALL userId stores
+  if (expiredEndpoints.size > 0) {
+    for (const [uid, subs] of pushSubscriptionsStore) {
+      const cleaned = subs.filter(s => !expiredEndpoints.has(s.endpoint));
+      if (cleaned.length !== subs.length) {
+        pushSubscriptionsStore.set(uid, cleaned);
+      }
+    }
     savePushSubscriptions();
   }
 
-  console.log(`📲 Web Push Dispatched → User:${userId} | Sent to ${sentCount} device(s)`);
+  console.log(`📲 Web Push Dispatched → User:${userId} | Sent: ${sentCount}/${allTargetSubs.length} device(s)${expiredEndpoints.size ? ` | Pruned: ${expiredEndpoints.size} expired` : ''}`);
   return { ok: true, sentCount };
 }
 
