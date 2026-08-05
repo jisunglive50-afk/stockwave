@@ -29,9 +29,12 @@ try {
   }
 } catch {}
 
-const yf = yahooFinancePackage?.default || yahooFinancePackage;
+const yfPackage = yahooFinancePackage?.default || yahooFinancePackage;
+let yf = yfPackage;
 try {
-  if (typeof yf?.setGlobalConfig === 'function') {
+  if (typeof yfPackage === 'function') {
+    yf = new yfPackage({ suppressNotices: ['yahooSurvey', 'ripHistorical'] });
+  } else if (typeof yf?.setGlobalConfig === 'function') {
     yf.setGlobalConfig({ suppressNotices: ['yahooSurvey', 'ripHistorical'] });
   }
 } catch {}
@@ -2015,6 +2018,28 @@ app.get('/api/search', async (req, res) => {
     const result = await yf.search(q, { quotesCount: 8, newsCount: 0 }, { validateResult: false });
     res.json((result?.quotes || []).filter(q => q.quoteType === 'EQUITY' || q.quoteType === 'ETF'));
   } catch { res.json([]); }
+});
+
+/** GET /api/financials/:symbol — Quarterly & Financial Data */
+app.get('/api/financials/:symbol', async (req, res) => {
+  const { symbol } = req.params;
+  const symUpper = (symbol || '').toUpperCase();
+  try {
+    const data = await yf.quoteSummary(symUpper, {
+      modules: [
+        'earnings',
+        'financialData',
+        'defaultKeyStatistics',
+        'calendarEvents',
+        'earningsTrend',
+        'incomeStatementHistoryQuarterly'
+      ]
+    });
+    res.json(data || {});
+  } catch (e) {
+    console.warn(`[API] financials fetch failed for ${symUpper}:`, e.message);
+    res.json({});
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
