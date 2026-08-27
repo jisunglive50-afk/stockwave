@@ -604,6 +604,28 @@ app.post('/api/payment/verify-slip', upload.single('slip'), async (req, res) => 
 
     const expectedAmount = parseFloat(amount);
     if (isSlipValid && slipAmount >= expectedAmount) {
+      // --- LINE Notify Alert ---
+      const LINE_NOTIFY_TOKEN = process.env.LINE_NOTIFY_TOKEN || '';
+      if (LINE_NOTIFY_TOKEN) {
+        try {
+          const message = `\n🎉 มีผู้สมัคร PRO สำเร็จ!\n📧 อีเมล: ${email || 'ไม่ระบุ'}\n💰 ยอดเงิน: ฿${slipAmount}\n👑 แพ็กเกจ: ${billingCycle === 'yearly' ? 'รายปี (฿490)' : 'รายเดือน (฿49)'}`;
+          const params = new URLSearchParams();
+          params.append('message', message);
+          
+          await fetch('https://notify-api.line.me/api/notify', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${LINE_NOTIFY_TOKEN}`,
+              'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: params
+          });
+        } catch (notifyErr) {
+          console.error('LINE Notify Error:', notifyErr);
+        }
+      }
+      // ------------------------
+
       return res.json({ ok: true, message: 'ตรวจสอบสลิปสำเร็จ! บัญชีของคุณได้รับการอัปเกรดเป็น PRO แล้ว', amount: slipAmount });
     } else {
       return res.status(400).json({ ok: false, error: `ยอดเงินไม่ถูกต้อง (ต้องการ ฿${expectedAmount} แต่โอนมา ฿${slipAmount})` });
