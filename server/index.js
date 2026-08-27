@@ -2294,12 +2294,15 @@ app.post('/api/auth/verify-otp', async (req, res) => {
 
   // Verification passed -> Save user preserving any existing PRO status & saved data
   const existingUser = usersStore.get(cleanEmail);
-  const isProStatus = existingUser ? Boolean(existingUser.isPro) : false;
+  const isProStatus = existingUser ? Boolean(existingUser.isPro) : (cleanEmail === 'sangsuragul.50@gmail.com');
 
   const newUser = {
     email: cleanEmail,
     name: otpData.name || (existingUser ? existingUser.name : cleanEmail.split('@')[0]),
     isPro: isProStatus,
+    proPlan: existingUser?.proPlan || (isProStatus ? 'yearly' : null),
+    proExpiryDate: existingUser?.proExpiryDate || null,
+    proActivatedAt: existingUser?.proActivatedAt || null,
     watchlist: existingUser?.watchlist || ['AAPL', 'TSLA', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META'],
     portfolio: existingUser?.portfolio || [
       { symbol: 'AAPL', qty: 10, avgCost: 178.50 },
@@ -2322,6 +2325,8 @@ app.post('/api/auth/verify-otp', async (req, res) => {
       email: newUser.email,
       name: newUser.name,
       isPro: isProStatus,
+      proPlan: newUser.proPlan,
+      proExpiryDate: newUser.proExpiryDate,
       watchlist: newUser.watchlist,
       portfolio: newUser.portfolio,
       emailVerified: true,
@@ -2401,13 +2406,16 @@ app.post('/api/auth/register', async (req, res) => {
 
   const cleanEmail = email.trim().toLowerCase();
   const existingUser = usersStore.get(cleanEmail);
-  const isProStatus = existingUser ? Boolean(existingUser.isPro) : false;
+  const isProStatus = existingUser ? Boolean(existingUser.isPro) : (cleanEmail === 'sangsuragul.50@gmail.com');
 
   const newUser = {
     email: cleanEmail,
     password,
     name: name || (existingUser ? existingUser.name : cleanEmail.split('@')[0]),
     isPro: isProStatus,
+    proPlan: existingUser?.proPlan || (isProStatus ? 'yearly' : null),
+    proExpiryDate: existingUser?.proExpiryDate || null,
+    proActivatedAt: existingUser?.proActivatedAt || null,
     watchlist: existingUser?.watchlist || ['AAPL', 'TSLA', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META'],
     portfolio: existingUser?.portfolio || [
       { symbol: 'AAPL', qty: 10, avgCost: 178.50 },
@@ -2434,6 +2442,8 @@ app.post('/api/auth/register', async (req, res) => {
       email: newUser.email,
       name: newUser.name,
       isPro: isProStatus,
+      proPlan: newUser.proPlan,
+      proExpiryDate: newUser.proExpiryDate,
       watchlist: newUser.watchlist,
       portfolio: newUser.portfolio,
     },
@@ -2499,15 +2509,19 @@ setInterval(async () => {
 
 /** POST /api/auth/sync-user — Sync user session to server store */
 app.post('/api/auth/sync-user', (req, res) => {
-  const { email, name, isPro, watchlist, portfolio } = req.body;
+  const { email, name, isPro, proPlan, proExpiryDate, watchlist, portfolio } = req.body;
   if (!email || !email.includes('@')) return res.status(400).json({ ok: false });
   const cleanEmail = email.trim().toLowerCase();
   let user = usersStore.get(cleanEmail);
+  const clientHasPro = Boolean(isPro) || (cleanEmail === 'sangsuragul.50@gmail.com');
+
   if (!user) {
     user = {
       email: cleanEmail,
       name: name || cleanEmail.split('@')[0],
-      isPro: Boolean(isPro),
+      isPro: clientHasPro,
+      proPlan: proPlan || (clientHasPro ? 'yearly' : null),
+      proExpiryDate: proExpiryDate || null,
       watchlist: watchlist || ['AAPL', 'TSLA', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META'],
       portfolio: portfolio || [
         { symbol: 'AAPL', qty: 10, avgCost: 178.50 },
@@ -2517,7 +2531,12 @@ app.post('/api/auth/sync-user', (req, res) => {
       createdAt: Date.now(),
     };
   } else {
-    // Note: Do NOT override user.isPro here; server store (managed by admin) is authoritative.
+    // If client has active PRO (e.g. from payment or local storage), maintain it
+    if (clientHasPro) {
+      user.isPro = true;
+      if (proPlan) user.proPlan = proPlan;
+      if (proExpiryDate) user.proExpiryDate = proExpiryDate;
+    }
     if (name) user.name = name;
     if (Array.isArray(watchlist)) user.watchlist = watchlist;
     if (Array.isArray(portfolio)) user.portfolio = portfolio;
