@@ -12,8 +12,11 @@ import { fileURLToPath } from 'url';
 import yahooFinancePackage from 'yahoo-finance2';
 import nodemailer from 'nodemailer';
 import webpush from 'web-push';
+import multer from 'multer';
+import FormData from 'form-data';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const upload = multer({ storage: multer.memoryStorage() });
 
 // ─── Load .env manually (no dotenv dep needed) ───────────────────────────────
 try {
@@ -554,6 +557,58 @@ app.get('/', (req, res) => {
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', uptime: process.uptime() });
+});
+
+// ─── Payment & SlipOK REST API Routes ────────────────────────────────────────
+app.post('/api/payment/verify-slip', upload.single('slip'), async (req, res) => {
+  try {
+    const { email, amount, billingCycle } = req.body;
+    const slipFile = req.file;
+
+    if (!slipFile) {
+      return res.status(400).json({ ok: false, error: 'กรุณาแนบรูปสลิป' });
+    }
+
+    const SLIPOK_API_KEY = process.env.SLIPOK_API_KEY || '';
+    let isSlipValid = false;
+    let slipAmount = 0;
+
+    if (SLIPOK_API_KEY) {
+      const formData = new FormData();
+      formData.append('files', slipFile.buffer, {
+        filename: slipFile.originalname,
+        contentType: slipFile.mimetype,
+      });
+
+      const response = await fetch('https://api.slipok.com/api/line/apikey/' + SLIPOK_API_KEY, {
+        method: 'POST',
+        headers: formData.getHeaders(),
+        body: formData,
+      });
+      const data = await response.json();
+      
+      if (data.success) {
+        isSlipValid = true;
+        slipAmount = data.data.amount;
+      } else {
+        return res.status(400).json({ ok: false, error: 'สลิปไม่ถูกต้อง หรือใช้ซ้ำ' });
+      }
+    } else {
+      console.log('⚠️ No SLIPOK_API_KEY found, simulating successful slip verification for demo purposes.');
+      isSlipValid = true;
+      slipAmount = parseFloat(amount);
+    }
+
+    const expectedAmount = parseFloat(amount);
+    if (isSlipValid && slipAmount >= expectedAmount) {
+      return res.json({ ok: true, message: 'ตรวจสอบสลิปสำเร็จ! บัญชีของคุณได้รับการอัปเกรดเป็น PRO แล้ว', amount: slipAmount });
+    } else {
+      return res.status(400).json({ ok: false, error: `ยอดเงินไม่ถูกต้อง (ต้องการ ฿${expectedAmount} แต่โอนมา ฿${slipAmount})` });
+    }
+  } catch (error) {
+    console.error('Slip Verification Error:', error);
+    res.status(500).json({ ok: false, error: 'ระบบตรวจสอบสลิปขัดข้อง กรุณาลองใหม่' });
+  }
 });
 
 // ─── Web Push REST API Routes ────────────────────────────────────────────────
