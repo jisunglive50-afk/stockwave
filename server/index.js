@@ -560,6 +560,16 @@ app.get('/api/health', (req, res) => {
 });
 
 // ─── Payment & SlipOK REST API Routes ────────────────────────────────────────
+const USED_SLIPS_FILE = path.join(__dirname, 'used_slips.json');
+function loadUsedSlips() {
+  try { return JSON.parse(fs.readFileSync(USED_SLIPS_FILE, 'utf8')); } catch { return []; }
+}
+function saveUsedSlip(ref, email) {
+  const list = loadUsedSlips();
+  list.push({ ref, email: (email || '').toLowerCase().trim(), usedAt: new Date().toISOString() });
+  fs.writeFileSync(USED_SLIPS_FILE, JSON.stringify(list, null, 2));
+}
+
 app.post('/api/payment/verify-slip', upload.single('slip'), async (req, res) => {
   try {
     const { email, amount, billingCycle } = req.body;
@@ -597,9 +607,24 @@ app.post('/api/payment/verify-slip', upload.single('slip'), async (req, res) => 
       body: bodyBuffer,
     });
     const data = await response.json();
-    console.log('SlipOK API Response:', data); // Add this for debugging
+    console.log('SlipOK API Response:', data);
     
     if (data.success) {
+      const transRef = data.data?.transRef || data.data?.qrCode || null;
+      const normalizedEmail = (email || '').toLowerCase().trim();
+      const usedSlips = loadUsedSlips();
+
+      // --- Block 1: สลิปใบนี้เคยถูกใช้แล้ว (ไม่ว่าจะ email ใดก็ตาม) ---
+      if (transRef && usedSlips.some(s => s.ref === transRef)) {
+        return res.status(400).json({ ok: false, error: 'สลิปใบนี้เคยถูกใช้ไปแล้ว ไม่สามารถใช้ซ้ำได้' });
+      }
+
+      // --- Block 2: email นี้จ่ายไปแล้ว (ป้องกันการใช้สลิปใบใหม่ซ้ำ) ---
+      if (normalizedEmail && usedSlips.some(s => s.email === normalizedEmail)) {
+        return res.status(400).json({ ok: false, error: 'อีเมลนี้ได้รับการอัปเกรดแล้ว ไม่สามารถชำระซ้ำได้' });
+      }
+      // -----------------------------------------------------------------
+
       isSlipValid = true;
       slipAmount = data.data.amount;
     } else {
@@ -609,6 +634,11 @@ app.post('/api/payment/verify-slip', upload.single('slip'), async (req, res) => 
 
     const expectedAmount = parseFloat(amount);
     if (isSlipValid && slipAmount >= expectedAmount) {
+      // --- Save slip reference + email to prevent reuse ---
+      const transRef = data.data?.transRef || data.data?.qrCode || null;
+      if (transRef) saveUsedSlip(transRef, email);
+      // -------------------------------------------
+
       // --- LINE Notify Alert ---
       const LINE_NOTIFY_TOKEN = process.env.LINE_NOTIFY_TOKEN || '';
       if (LINE_NOTIFY_TOKEN) {
