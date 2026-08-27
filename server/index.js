@@ -570,33 +570,32 @@ app.post('/api/payment/verify-slip', upload.single('slip'), async (req, res) => 
     }
 
     const SLIPOK_API_KEY = process.env.SLIPOK_API_KEY || '';
+    
+    if (!SLIPOK_API_KEY) {
+      return res.status(500).json({ ok: false, error: 'ระบบยังไม่ได้ตั้งค่า SLIPOK_API_KEY ไม่สามารถตรวจสอบสลิปได้' });
+    }
+
     let isSlipValid = false;
     let slipAmount = 0;
 
-    if (SLIPOK_API_KEY) {
-      const formData = new FormData();
-      formData.append('files', slipFile.buffer, {
-        filename: slipFile.originalname,
-        contentType: slipFile.mimetype,
-      });
+    const formData = new FormData();
+    formData.append('files', slipFile.buffer, {
+      filename: slipFile.originalname,
+      contentType: slipFile.mimetype,
+    });
 
-      const response = await fetch('https://api.slipok.com/api/line/apikey/' + SLIPOK_API_KEY, {
-        method: 'POST',
-        headers: formData.getHeaders(),
-        body: formData,
-      });
-      const data = await response.json();
-      
-      if (data.success) {
-        isSlipValid = true;
-        slipAmount = data.data.amount;
-      } else {
-        return res.status(400).json({ ok: false, error: 'สลิปไม่ถูกต้อง หรือใช้ซ้ำ' });
-      }
-    } else {
-      console.log('⚠️ No SLIPOK_API_KEY found, simulating successful slip verification for demo purposes.');
+    const response = await fetch('https://api.slipok.com/api/line/apikey/' + SLIPOK_API_KEY, {
+      method: 'POST',
+      headers: formData.getHeaders(),
+      body: formData,
+    });
+    const data = await response.json();
+    
+    if (data.success) {
       isSlipValid = true;
-      slipAmount = parseFloat(amount);
+      slipAmount = data.data.amount;
+    } else {
+      return res.status(400).json({ ok: false, error: 'สลิปไม่ถูกต้อง หรือไม่พบข้อมูลสลิปนี้ (SlipOK)' });
     }
 
     const expectedAmount = parseFloat(amount);
