@@ -594,12 +594,14 @@ app.post('/api/payment/verify-slip', upload.single('slip'), async (req, res) => 
       body: formData,
     });
     const data = await response.json();
+    console.log('SlipOK API Response:', data); // Add this for debugging
     
     if (data.success) {
       isSlipValid = true;
       slipAmount = data.data.amount;
     } else {
-      return res.status(400).json({ ok: false, error: 'สลิปไม่ถูกต้อง หรือไม่พบข้อมูลสลิปนี้ (SlipOK)' });
+      const errorMsg = data.message || 'สลิปไม่ถูกต้อง หรือไม่พบข้อมูลสลิปนี้';
+      return res.status(400).json({ ok: false, error: `SlipOK Error: ${errorMsg}` });
     }
 
     const expectedAmount = parseFloat(amount);
