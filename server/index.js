@@ -569,10 +569,11 @@ app.post('/api/payment/verify-slip', upload.single('slip'), async (req, res) => 
       return res.status(400).json({ ok: false, error: 'กรุณาแนบรูปสลิป' });
     }
 
+    const SLIPOK_BRANCH_ID = process.env.SLIPOK_BRANCH_ID || '';
     const SLIPOK_API_KEY = process.env.SLIPOK_API_KEY || '';
     
-    if (!SLIPOK_API_KEY) {
-      return res.status(500).json({ ok: false, error: 'ระบบยังไม่ได้ตั้งค่า SLIPOK_API_KEY ไม่สามารถตรวจสอบสลิปได้' });
+    if (!SLIPOK_BRANCH_ID || !SLIPOK_API_KEY) {
+      return res.status(500).json({ ok: false, error: 'ระบบยังไม่ได้ตั้งค่า SLIPOK_BRANCH_ID หรือ SLIPOK_API_KEY' });
     }
 
     let isSlipValid = false;
@@ -584,9 +585,12 @@ app.post('/api/payment/verify-slip', upload.single('slip'), async (req, res) => 
       contentType: slipFile.mimetype,
     });
 
-    const response = await fetch('https://api.slipok.com/api/line/apikey/' + SLIPOK_API_KEY, {
+    const headers = formData.getHeaders();
+    headers['x-authorization'] = SLIPOK_API_KEY;
+
+    const response = await fetch('https://api.slipok.com/api/line/apikey/' + SLIPOK_BRANCH_ID, {
       method: 'POST',
-      headers: formData.getHeaders(),
+      headers: headers,
       body: formData,
     });
     const data = await response.json();
