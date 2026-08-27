@@ -587,6 +587,7 @@ app.post('/api/payment/verify-slip', upload.single('slip'), async (req, res) => 
 
     const headers = formData.getHeaders();
     headers['x-authorization'] = SLIPOK_API_KEY;
+    headers['Content-Length'] = formData.getLengthSync(); // Fix: Ensure full body is sent
 
     const response = await fetch('https://api.slipok.com/api/line/apikey/' + SLIPOK_BRANCH_ID, {
       method: 'POST',
