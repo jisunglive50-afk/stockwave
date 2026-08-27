@@ -570,6 +570,21 @@ function saveUsedSlip(ref, email) {
   fs.writeFileSync(USED_SLIPS_FILE, JSON.stringify(list, null, 2));
 }
 
+/**
+ * ตรวจสอบและ downgrade user ที่หมดอายุ PRO อัตโนมัติ
+ * คืนค่า user object ที่อัปเดตแล้ว (ไม่ save — ให้ caller save เอง)
+ */
+function checkAndExpirePro(user) {
+  if (!user || !user.isPro) return user;
+  if (!user.proExpiryDate) return user; // ไม่มี expiry = legacy user, ข้ามไป
+  if (Date.now() > new Date(user.proExpiryDate).getTime()) {
+    console.log(`⏰ PRO expired → downgrade: ${user.email}`);
+    user.isPro = false;
+    user.proExpiredAt = new Date().toISOString();
+  }
+  return user;
+}
+
 app.post('/api/payment/verify-slip', upload.single('slip'), async (req, res) => {
   try {
     const { email, amount, billingCycle } = req.body;
@@ -619,9 +634,16 @@ app.post('/api/payment/verify-slip', upload.single('slip'), async (req, res) => 
         return res.status(400).json({ ok: false, error: 'สลิปใบนี้เคยถูกใช้ไปแล้ว ไม่สามารถใช้ซ้ำได้' });
       }
 
-      // --- Block 2: email นี้จ่ายไปแล้ว (ป้องกันการใช้สลิปใบใหม่ซ้ำ) ---
-      if (normalizedEmail && usedSlips.some(s => s.email === normalizedEmail)) {
-        return res.status(400).json({ ok: false, error: 'อีเมลนี้ได้รับการอัปเกรดแล้ว ไม่สามารถชำระซ้ำได้' });
+      // --- Block 2: email นี้จ่ายไปแล้วและยัง active อยู่ (ป้องกันการใช้สลิปใบใหม่ซ้ำ) ---
+      if (normalizedEmail) {
+        const existingUser = usersStore.get(normalizedEmail);
+        const isStillActive = existingUser?.isPro && existingUser?.proExpiryDate
+          && Date.now() < new Date(existingUser.proExpiryDate).getTime();
+        // Legacy PRO ที่ไม่มี proExpiryDate = ให้ผ่าน (admin grant)
+        const isLegacyActivePro = existingUser?.isPro && !existingUser?.proExpiryDate;
+        if (isStillActive || isLegacyActivePro) {
+          return res.status(400).json({ ok: false, error: 'อีเมลนี้ยังเป็นสมาชิก PRO อยู่ ไม่สามารถชำระซ้ำได้' });
+        }
       }
       // -----------------------------------------------------------------
 
@@ -638,6 +660,26 @@ app.post('/api/payment/verify-slip', upload.single('slip'), async (req, res) => 
       const transRef = data.data?.transRef || data.data?.qrCode || null;
       if (transRef) saveUsedSlip(transRef, email);
       // -------------------------------------------
+
+      // --- ตั้ง proExpiryDate ตาม billingCycle ---
+      const normalizedEmail = (email || '').toLowerCase().trim();
+      if (normalizedEmail) {
+        let proUser = usersStore.get(normalizedEmail);
+        if (!proUser) {
+          proUser = { email: normalizedEmail, name: normalizedEmail.split('@')[0], createdAt: Date.now() };
+        }
+        const daysToAdd = billingCycle === 'yearly' ? 365 : 30;
+        const expiryDate = new Date(Date.now() + daysToAdd * 24 * 60 * 60 * 1000).toISOString();
+        proUser.isPro = true;
+        proUser.proPlan = billingCycle === 'yearly' ? 'yearly' : 'monthly';
+        proUser.proExpiryDate = expiryDate;
+        proUser.proActivatedAt = new Date().toISOString();
+        delete proUser.proExpiredAt; // ล้าง flag เก่าถ้าต่ออายุ
+        usersStore.set(normalizedEmail, proUser);
+        saveUsers();
+        console.log(`👑 PRO activated → ${normalizedEmail} | plan: ${proUser.proPlan} | expires: ${expiryDate}`);
+      }
+      // ------------------------------------------
 
       // --- LINE Notify Alert ---
       const LINE_NOTIFY_TOKEN = process.env.LINE_NOTIFY_TOKEN || '';
@@ -2322,13 +2364,21 @@ app.post('/api/auth/login', (req, res) => {
     saveUsers();
   }
 
-  console.log(`🔐 Login success → ${cleanEmail} (isPro: ${Boolean(user.isPro)})`);
+  // --- ตรวจสอบ PRO หมดอายุ ---
+  user = checkAndExpirePro(user);
+  usersStore.set(cleanEmail, user);
+  saveUsers();
+  // ---------------------------
+
+  console.log(`🔐 Login success → ${cleanEmail} (isPro: ${Boolean(user.isPro)}, expires: ${user.proExpiryDate || 'N/A'})`);
   res.json({
     ok: true,
     user: {
       email: user.email,
       name: user.name,
       isPro: Boolean(user.isPro),
+      proPlan: user.proPlan || null,
+      proExpiryDate: user.proExpiryDate || null,
       watchlist: user.watchlist || ['AAPL', 'TSLA', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META'],
       portfolio: user.portfolio || [
         { symbol: 'AAPL', qty: 10, avgCost: 178.50 },
@@ -2472,6 +2522,9 @@ app.post('/api/auth/sync-user', (req, res) => {
     if (Array.isArray(watchlist)) user.watchlist = watchlist;
     if (Array.isArray(portfolio)) user.portfolio = portfolio;
   }
+  // --- ตรวจสอบ PRO หมดอายุ ---
+  user = checkAndExpirePro(user);
+  // ---------------------------
   usersStore.set(cleanEmail, user);
   saveUsers();
   res.json({
