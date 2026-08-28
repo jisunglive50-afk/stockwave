@@ -1036,54 +1036,6 @@ async function getYahooSession() {
   }
 }
 
-async function fetchBatchQuotesDirect(symbols) {
-  if (!symbols || symbols.length === 0) return [];
-  const syms = symbols.join(',').toUpperCase();
-  const session = await getYahooSession();
-  
-  const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  };
-  if (session.cookie) headers['Cookie'] = session.cookie;
-
-  let url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(syms)}`;
-  if (session.crumb) url += `&crumb=${encodeURIComponent(session.crumb)}`;
-
-  try {
-    const res = await fetch(url, { headers, signal: AbortSignal.timeout(6000) });
-    if (res.ok) {
-      const data = await res.json();
-      const list = data?.quoteResponse?.result || [];
-      if (list.length > 0) {
-        return list.map(q => ({
-          symbol: q.symbol,
-          shortName: q.shortName || q.longName || q.symbol,
-          longName: q.longName || q.shortName || q.symbol,
-          regularMarketPrice: +(q.regularMarketPrice || 0).toFixed(2),
-          regularMarketChange: +(q.regularMarketChange || 0).toFixed(2),
-          regularMarketChangePercent: +(q.regularMarketChangePercent || 0).toFixed(2),
-          regularMarketPreviousClose: +(q.regularMarketPreviousClose || q.regularMarketPrice || 0).toFixed(2),
-          regularMarketDayHigh: +(q.regularMarketDayHigh || q.regularMarketPrice * 1.01).toFixed(2),
-          regularMarketDayLow: +(q.regularMarketDayLow || q.regularMarketPrice * 0.99).toFixed(2),
-          fiftyTwoWeekHigh: q.fiftyTwoWeekHigh || null,
-          fiftyTwoWeekLow: q.fiftyTwoWeekLow || null,
-          marketCap: q.marketCap || null,
-          preMarketPrice: q.preMarketPrice ? +q.preMarketPrice.toFixed(2) : null,
-          preMarketChange: q.preMarketChange ? +q.preMarketChange.toFixed(2) : null,
-          preMarketChangePercent: q.preMarketChangePercent ? +q.preMarketChangePercent.toFixed(2) : null,
-          postMarketPrice: q.postMarketPrice ? +q.postMarketPrice.toFixed(2) : null,
-          postMarketChange: q.postMarketChange ? +q.postMarketChange.toFixed(2) : null,
-          postMarketChangePercent: q.postMarketChangePercent ? +q.postMarketChangePercent.toFixed(2) : null,
-          marketState: q.marketState || 'REGULAR',
-        }));
-      }
-    }
-  } catch (e) {
-    console.warn(`⚠️ Batch quote fetch error for ${syms}:`, e.message);
-  }
-
-  return Promise.all(symbols.map(fetchSingleQuoteDirect)).then(res => res.filter(Boolean));
-}
 
 async function fetchSingleQuoteDirect(symbol) {
   const sym = symbol.toUpperCase();
