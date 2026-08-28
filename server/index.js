@@ -932,9 +932,9 @@ function extractArticleParagraphs(html) {
 }
 
 async function fetchBatchQuotesDirect(symbols) {
+  if (!symbols || symbols.length === 0) return [];
   const { calcQuoteSR } = await import('./indicators.js');
-  
-  // Chunk symbols into groups of 30 to avoid URI too long errors or rate limits
+
   const chunkSize = 30;
   const chunks = [];
   for (let i = 0; i < symbols.length; i += chunkSize) {
@@ -944,49 +944,92 @@ async function fetchBatchQuotesDirect(symbols) {
   const allQuotes = [];
 
   for (const chunk of chunks) {
+    const syms = chunk.join(',').toUpperCase();
+
+    // ── Strategy 1: Direct Yahoo v7/finance/quote with cookie+crumb ──
+    let gotData = false;
     try {
-      // Use yf.quote which handles batching automatically to a single /v7 endpoint
-      const quotes = await yf.quote(chunk, {}, { validateResult: false });
-      const qArray = Array.isArray(quotes) ? quotes : [quotes];
-      
-      for (const q of qArray) {
-        if (q && q.regularMarketPrice) {
-          const plainQ = JSON.parse(JSON.stringify(q));
-          
-          // Format quote object to match the frontend expectations
-          const quoteObj = {
-            ...plainQ,
-            marketState: plainQ.marketState || 'CLOSED',
-            regularMarketPreviousClose: plainQ.regularMarketPreviousClose || plainQ.regularMarketPrice,
-          };
-          
-          quoteObj.sr = calcQuoteSR(quoteObj);
-          allQuotes.push(quoteObj);
+      const session = await getYahooSession();
+      const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+      };
+      if (session.cookie) headers['Cookie'] = session.cookie;
+      let url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(syms)}&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,regularMarketPreviousClose,regularMarketDayHigh,regularMarketDayLow,fiftyTwoWeekHigh,fiftyTwoWeekLow,marketCap,preMarketPrice,preMarketChange,preMarketChangePercent,postMarketPrice,postMarketChange,postMarketChangePercent,marketState,shortName,longName`;
+      if (session.crumb) url += `&crumb=${encodeURIComponent(session.crumb)}`;
+
+      const res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
+      if (res.ok) {
+        const data = await res.json();
+        const list = data?.quoteResponse?.result || [];
+        if (list.length > 0) {
+          for (const q of list) {
+            if (q && q.regularMarketPrice) {
+              const quoteObj = {
+                symbol: q.symbol,
+                shortName: q.shortName || q.longName || q.symbol,
+                longName: q.longName || q.shortName || q.symbol,
+                regularMarketPrice: +(q.regularMarketPrice || 0).toFixed(2),
+                regularMarketChange: +(q.regularMarketChange || 0).toFixed(2),
+                regularMarketChangePercent: +(q.regularMarketChangePercent || 0).toFixed(2),
+                regularMarketPreviousClose: +(q.regularMarketPreviousClose || q.regularMarketPrice || 0).toFixed(2),
+                regularMarketDayHigh: +(q.regularMarketDayHigh || q.regularMarketPrice * 1.01).toFixed(2),
+                regularMarketDayLow: +(q.regularMarketDayLow || q.regularMarketPrice * 0.99).toFixed(2),
+                fiftyTwoWeekHigh: q.fiftyTwoWeekHigh || null,
+                fiftyTwoWeekLow: q.fiftyTwoWeekLow || null,
+                marketCap: q.marketCap || null,
+                preMarketPrice: q.preMarketPrice ? +q.preMarketPrice.toFixed(2) : null,
+                preMarketChange: q.preMarketChange ? +q.preMarketChange.toFixed(2) : null,
+                preMarketChangePercent: q.preMarketChangePercent ? +q.preMarketChangePercent.toFixed(2) : null,
+                postMarketPrice: q.postMarketPrice ? +q.postMarketPrice.toFixed(2) : null,
+                postMarketChange: q.postMarketChange ? +q.postMarketChange.toFixed(2) : null,
+                postMarketChangePercent: q.postMarketChangePercent ? +q.postMarketChangePercent.toFixed(2) : null,
+                marketState: q.marketState || 'CLOSED',
+              };
+              quoteObj.sr = calcQuoteSR(quoteObj);
+              allQuotes.push(quoteObj);
+            }
+          }
+          gotData = list.length > 0;
         }
       }
     } catch (e) {
-      console.warn(`⚠️ Batch quote fetch error for chunk ${chunk.join(',')}:`, e.message);
-      // Fallback to mock data only if completely blocked
-      for (const sym of chunk) {
-        const mockObj = {
-          symbol: sym,
-          shortName: sym,
-          longName: sym,
-          regularMarketPrice: 100, // Dummy value (Rate Limited)
-          regularMarketChange: 0,
-          regularMarketChangePercent: 0,
-          regularMarketPreviousClose: 100,
-          marketState: 'CLOSED',
-          isMock: true
-        };
-        mockObj.sr = calcQuoteSR(mockObj);
-        allQuotes.push(mockObj);
+      console.warn(`⚠️ v7 batch fetch failed for ${syms}:`, e.message);
+    }
+
+    // ── Strategy 2: yahoo-finance2 library (if direct v7 failed) ──
+    if (!gotData) {
+      try {
+        const quotes = await yf.quote(chunk, {}, { validateResult: false });
+        const qArray = Array.isArray(quotes) ? quotes : [quotes];
+        for (const q of qArray) {
+          if (q && q.regularMarketPrice) {
+            const plainQ = JSON.parse(JSON.stringify(q));
+            plainQ.sr = calcQuoteSR(plainQ);
+            allQuotes.push(plainQ);
+            gotData = true;
+          }
+        }
+      } catch (e) {
+        console.warn(`⚠️ yf.quote batch failed for ${syms}:`, e.message);
+      }
+    }
+
+    // ── Strategy 3: Per-symbol chart endpoint (if batch failed) ──
+    if (!gotData) {
+      console.warn(`⚠️ All batch methods failed for chunk: ${syms}, falling back to per-symbol`);
+      const perSymbolResults = await Promise.allSettled(chunk.map(fetchSingleQuoteDirect));
+      for (const r of perSymbolResults) {
+        if (r.status === 'fulfilled' && r.value) {
+          allQuotes.push(r.value);
+        }
       }
     }
   }
 
   return allQuotes;
 }
+
 
 function rangeToPeriod1(range) {
   const now = new Date();
@@ -1146,34 +1189,8 @@ async function fetchSingleQuoteDirect(symbol) {
     }
   } catch {}
 
-  // EMERGENCY FALLBACK (If Yahoo is blocked)
-  const mockQuote = {
-    symbol: sym,
-    shortName: sym,
-    longName: sym,
-    regularMarketPrice: 100, // Dummy value
-    regularMarketChange: 0,
-    regularMarketChangePercent: 0,
-    regularMarketPreviousClose: 100,
-    regularMarketDayHigh: 100,
-    regularMarketDayLow: 100,
-    fiftyTwoWeekHigh: 100,
-    fiftyTwoWeekLow: 100,
-    marketCap: null,
-    preMarketPrice: null,
-    preMarketChange: null,
-    preMarketChangePercent: null,
-    postMarketPrice: null,
-    postMarketChange: null,
-    postMarketChangePercent: null,
-    marketState: 'CLOSED',
-    isMock: true
-  };
-
-  return {
-    ...mockQuote,
-    sr: calcQuoteSR(mockQuote)
-  };
+  // All sources failed - return null (frontend will show skeleton)
+  return null;
 }
 
 // ========== Routes ==========
