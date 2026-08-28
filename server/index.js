@@ -1024,9 +1024,9 @@ async function fetchSingleQuoteDirect(symbol) {
 
       if (meta && meta.regularMarketPrice) {
         const prevClose = meta.chartPreviousClose || meta.previousClose || meta.regularMarketPrice;
-        const regPrice = meta.regularMarketPrice;
-        const regChange = regPrice - prevClose;
-        const regChangePct = prevClose > 0 ? (regChange / prevClose) * 100 : 0;
+        let regPrice = meta.regularMarketPrice;
+        let regChange = regPrice - prevClose;
+        let regChangePct = prevClose > 0 ? (regChange / prevClose) * 100 : 0;
 
         const nowSec = Math.floor(Date.now() / 1000);
         const prePeriod = meta.currentTradingPeriod?.pre;
