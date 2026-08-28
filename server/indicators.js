@@ -94,11 +94,14 @@ export function calcQuoteSR(quote) {
   const C = quote.regularMarketPrice || quote.regularMarketPreviousClose || quote.price || 100;
   const cacheKey = getNYWeekKey(sym);
   
-  if (srCache.has(cacheKey)) {
+  if (!quote.isMock && srCache.has(cacheKey)) {
     return srCache.get(cacheKey);
   }
 
   const result = calcExpectedMoveSR(sym, C);
-  srCache.set(cacheKey, result);
+  
+  if (!quote.isMock) {
+    srCache.set(cacheKey, result);
+  }
   return result;
 }

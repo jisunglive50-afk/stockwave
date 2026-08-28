@@ -976,7 +976,8 @@ async function fetchBatchQuotesDirect(symbols) {
           regularMarketChange: 0,
           regularMarketChangePercent: 0,
           regularMarketPreviousClose: 100,
-          marketState: 'CLOSED'
+          marketState: 'CLOSED',
+          isMock: true
         };
         mockObj.sr = calcQuoteSR(mockObj);
         allQuotes.push(mockObj);
@@ -1213,7 +1214,8 @@ async function fetchSingleQuoteDirect(symbol) {
     postMarketPrice: null,
     postMarketChange: null,
     postMarketChangePercent: null,
-    marketState: 'CLOSED'
+    marketState: 'CLOSED',
+    isMock: true
   };
 
   return {
