@@ -1093,7 +1093,7 @@ async function fetchSingleQuoteDirect(symbol) {
           }
         }
 
-        return {
+        const quoteObj = {
           symbol: sym,
           shortName: meta.shortName || meta.longName || sym,
           longName: meta.longName || meta.shortName || sym,
@@ -1113,6 +1113,12 @@ async function fetchSingleQuoteDirect(symbol) {
           postMarketChange: postChange,
           postMarketChangePercent: postPct,
           marketState,
+        };
+
+        const { calcQuoteSR } = require('./indicators');
+        return {
+          ...quoteObj,
+          sr: calcQuoteSR(quoteObj)
         };
       }
     }
