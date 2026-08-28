@@ -656,6 +656,28 @@ app.post('/api/payment/verify-slip', upload.single('slip'), async (req, res) => 
           }
         }
 
+        // --- Block 0.5: ตรวจสอบบัญชีผู้รับเงิน (ต้องเป็นสถาพร หรือ 0645342236 เท่านั้น) ---
+        const receiver = data.data?.receiver || {};
+        const receiverNameTh = (receiver.name || receiver.displayName || '').toLowerCase();
+        const receiverNameEn = (receiver.nameEn || '').toLowerCase();
+        const proxyValue = (receiver.proxy?.value || receiver.proxy?.account || '').replace(/\D/g, '');
+        const accountValue = (receiver.account?.value || receiver.account?.account || '').replace(/\D/g, '');
+        
+        const isReceiverMatch = 
+          receiverNameTh.includes('สถาพร') || 
+          receiverNameEn.includes('sathaporn') || 
+          receiverNameTh.includes('sathaporn') ||
+          receiverNameTh.includes('แสงสุรกุล') ||
+          proxyValue.includes('0645342236') || 
+          proxyValue.includes('66645342236') ||
+          accountValue.includes('0645342236') || 
+          accountValue.includes('66645342236');
+
+        if (!isReceiverMatch) {
+          console.warn('❌ Receiver mismatch. SlipOK Data:', JSON.stringify(receiver));
+          return res.status(400).json({ ok: false, error: 'สลิปนี้ไม่ได้โอนเข้าบัญชีที่กำหนด (สถาพร แสงสุรกุล) กรุณาตรวจสอบอีกครั้ง' });
+        }
+
         const normalizedEmail = (email || '').toLowerCase().trim();
         const usedSlips = loadUsedSlips();
 
