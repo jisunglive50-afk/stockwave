@@ -46,7 +46,7 @@ function getNYWeekKey(symbol) {
   const oneJan = new Date(year, 0, 1);
   const weekNum = Math.ceil(((sunday - oneJan) / 86400000 + oneJan.getDay() + 1) / 7);
   const sym = (symbol || 'STOCK').toUpperCase().replace(/[^A-Z0-9]/g, '');
-  return `sw_sr_v8_${sym}_${year}_${weekNum}`;
+  return `sw_sr_fibo_${sym}_${year}_${weekNum}`;
 }
 
 // In-memory cache for server
@@ -54,19 +54,24 @@ const srCache = new Map();
 
 function calcExpectedMoveSR(sym, anchorPrice) {
   const iv = IMPLIED_VOLATILITY_MAP[sym] || 25.0; 
+  // 1-Standard Deviation Expected Move (Weekly ≈ √52)
   const expectedMove = anchorPrice * (iv / 100) / Math.sqrt(52);
   
   const pivot = anchorPrice;
-  const s1 = pivot - expectedMove;
-  const r1 = pivot + expectedMove;
+  
+  // Fibonacci Golden Ratios applied to Expected Volatility Move
+  const fib382 = expectedMove * 0.382;
+  const fib618 = expectedMove * 0.618;
+  const fib100 = expectedMove * 1.000;
 
-  const tier2Dist = expectedMove * 0.21;
-  const s2 = s1 - tier2Dist;
-  const r2 = r1 + tier2Dist;
+  const r1 = pivot + fib382;
+  const s1 = pivot - fib382;
 
-  const tier3Dist = expectedMove * 0.50;
-  const s3 = s1 - tier3Dist;
-  const r3 = r1 + tier3Dist;
+  const r2 = pivot + fib618;
+  const s2 = pivot - fib618;
+
+  const r3 = pivot + fib100;
+  const s3 = pivot - fib100;
 
   return {
     pivot: +pivot.toFixed(2),
@@ -79,14 +84,14 @@ function calcExpectedMoveSR(sym, anchorPrice) {
     range: +(r1 - s1).toFixed(2),
     expectedMove: +expectedMove.toFixed(2),
     impliedVolatility: iv,
-    method: 'market_maker_expected_move_v8'
+    method: 'fibo_market_maker_expected_move'
   };
 }
 
 export function calcQuoteSR(quote) {
   const empty = {
     s1: null, s2: null, s3: null, r1: null, r2: null, r3: null,
-    pivot: null, range: null, method: 'market_maker_expected_move_v8'
+    pivot: null, range: null, method: 'fibo_market_maker_expected_move'
   };
   if (!quote) return empty;
 

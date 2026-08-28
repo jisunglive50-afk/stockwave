@@ -1505,10 +1505,8 @@ app.get('/api/movers/:type', async (req, res) => {
 app.get('/api/indices', async (req, res) => {
   const INDICES = ['^GSPC', '^IXIC', '^DJI', '^RUT', '^VIX'];
   try {
-    const results = await Promise.allSettled(
-      INDICES.map(sym => yf.quote(sym, {}, { validateResult: false }))
-    );
-    res.json(results.filter(r => r.status === 'fulfilled' && r.value).map(r => r.value));
+    const results = await fetchBatchQuotesDirect(INDICES);
+    res.json(results);
   } catch { res.json([]); }
 });
 
