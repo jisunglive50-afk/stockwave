@@ -83,7 +83,7 @@ function calcExpectedMoveSR(sym, anchorPrice) {
   };
 }
 
-function calcQuoteSR(quote) {
+export function calcQuoteSR(quote) {
   const empty = {
     s1: null, s2: null, s3: null, r1: null, r2: null, r3: null,
     pivot: null, range: null, method: 'market_maker_expected_move_v8'
@@ -102,7 +102,3 @@ function calcQuoteSR(quote) {
   srCache.set(cacheKey, result);
   return result;
 }
-
-module.exports = {
-  calcQuoteSR
-};

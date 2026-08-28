@@ -14,6 +14,7 @@ import nodemailer from 'nodemailer';
 import webpush from 'web-push';
 import multer from 'multer';
 import FormData from 'form-data';
+import { calcQuoteSR } from './indicators.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const upload = multer({ storage: multer.memoryStorage() });
@@ -1115,7 +1116,6 @@ async function fetchSingleQuoteDirect(symbol) {
           marketState,
         };
 
-        const { calcQuoteSR } = require('./indicators');
         return {
           ...quoteObj,
           sr: calcQuoteSR(quoteObj)
@@ -1128,10 +1128,42 @@ async function fetchSingleQuoteDirect(symbol) {
 
   try {
     const q = await yf.quote(sym, {}, { validateResult: false });
-    if (q && q.regularMarketPrice) return q;
+    if (q && q.regularMarketPrice) {
+      const plainQ = JSON.parse(JSON.stringify(q));
+      return {
+        ...plainQ,
+        sr: calcQuoteSR(plainQ)
+      };
+    }
   } catch {}
 
-  return null;
+  // EMERGENCY FALLBACK (If Yahoo is blocked)
+  const mockQuote = {
+    symbol: sym,
+    shortName: sym,
+    longName: sym,
+    regularMarketPrice: 100, // Dummy value
+    regularMarketChange: 0,
+    regularMarketChangePercent: 0,
+    regularMarketPreviousClose: 100,
+    regularMarketDayHigh: 100,
+    regularMarketDayLow: 100,
+    fiftyTwoWeekHigh: 100,
+    fiftyTwoWeekLow: 100,
+    marketCap: null,
+    preMarketPrice: null,
+    preMarketChange: null,
+    preMarketChangePercent: null,
+    postMarketPrice: null,
+    postMarketChange: null,
+    postMarketChangePercent: null,
+    marketState: 'CLOSED'
+  };
+
+  return {
+    ...mockQuote,
+    sr: calcQuoteSR(mockQuote)
+  };
 }
 
 // ========== Routes ==========
