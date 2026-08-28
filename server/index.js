@@ -585,6 +585,7 @@ function checkAndExpirePro(user) {
   }
   return user;
 }
+const processingSlips = new Set();
 
 app.post('/api/payment/verify-slip', upload.single('slip'), async (req, res) => {
   try {
@@ -601,9 +602,6 @@ app.post('/api/payment/verify-slip', upload.single('slip'), async (req, res) => 
     if (!SLIPOK_BRANCH_ID || !SLIPOK_API_KEY) {
       return res.status(500).json({ ok: false, error: 'ระบบยังไม่ได้ตั้งค่า SLIPOK_BRANCH_ID หรือ SLIPOK_API_KEY' });
     }
-
-    let isSlipValid = false;
-    let slipAmount = 0;
 
     const formData = new FormData();
     formData.append('files', slipFile.buffer, {
@@ -627,86 +625,116 @@ app.post('/api/payment/verify-slip', upload.single('slip'), async (req, res) => 
     
     if (data.success) {
       const transRef = data.data?.transRef || data.data?.qrCode || null;
-      const normalizedEmail = (email || '').toLowerCase().trim();
-      const usedSlips = loadUsedSlips();
-
-      // --- Block 1: สลิปใบนี้เคยถูกใช้แล้ว (ไม่ว่าจะ email ใดก็ตาม) ---
-      if (transRef && usedSlips.some(s => s.ref === transRef)) {
-        return res.status(400).json({ ok: false, error: 'สลิปใบนี้เคยถูกใช้ไปแล้ว ไม่สามารถใช้ซ้ำได้' });
+      if (!transRef) {
+        return res.status(400).json({ ok: false, error: 'ไม่พบหมายเลขอ้างอิงจากสลิป ไม่สามารถยืนยันได้' });
       }
 
-      // --- Block 2: email นี้จ่ายไปแล้วและยัง active อยู่ (ป้องกันการใช้สลิปใบใหม่ซ้ำ) ---
-      if (normalizedEmail) {
-        const existingUser = usersStore.get(normalizedEmail);
-        const isStillActive = existingUser?.isPro && existingUser?.proExpiryDate
-          && Date.now() < new Date(existingUser.proExpiryDate).getTime();
-        // Legacy PRO ที่ไม่มี proExpiryDate = ให้ผ่าน (admin grant)
-        const isLegacyActivePro = existingUser?.isPro && !existingUser?.proExpiryDate;
-        if (isStillActive || isLegacyActivePro) {
-          return res.status(400).json({ ok: false, error: 'อีเมลนี้ยังเป็นสมาชิก PRO อยู่ ไม่สามารถชำระซ้ำได้' });
+      if (processingSlips.has(transRef)) {
+        return res.status(400).json({ ok: false, error: 'สลิปใบนี้กำลังถูกประมวลผล กรุณารอสักครู่' });
+      }
+      processingSlips.add(transRef);
+
+      try {
+        const transDate = data.data?.transDate;
+        const transTime = data.data?.transTime;
+        const transTimestamp = data.data?.transTimestamp;
+        
+        let slipTime = 0;
+        if (transTimestamp) {
+          slipTime = new Date(transTimestamp).getTime();
+        } else if (transDate && transTime) {
+          const year = transDate.substring(0, 4);
+          const month = transDate.substring(4, 6);
+          const day = transDate.substring(6, 8);
+          slipTime = new Date(`${year}-${month}-${day}T${transTime}+07:00`).getTime();
         }
-      }
-      // -----------------------------------------------------------------
+        
+        if (slipTime > 0) {
+          const hoursDiff = (Date.now() - slipTime) / (1000 * 60 * 60);
+          if (hoursDiff > 24) {
+            return res.status(400).json({ ok: false, error: 'สลิปเก่าเกินไป (เกิน 24 ชั่วโมง) ไม่สามารถใช้งานได้' });
+          }
+        }
 
-      isSlipValid = true;
-      slipAmount = data.data.amount;
+        const normalizedEmail = (email || '').toLowerCase().trim();
+        const usedSlips = loadUsedSlips();
+
+        // --- Block 1: สลิปใบนี้เคยถูกใช้แล้ว (ไม่ว่าจะ email ใดก็ตาม) ---
+        if (usedSlips.some(s => s.ref === transRef)) {
+          return res.status(400).json({ ok: false, error: 'สลิปใบนี้เคยถูกใช้ไปแล้ว ไม่สามารถใช้ซ้ำได้' });
+        }
+
+        // --- Block 2: email นี้จ่ายไปแล้วและยัง active อยู่ (ป้องกันการใช้สลิปใบใหม่ซ้ำ) ---
+        if (normalizedEmail) {
+          const existingUser = usersStore.get(normalizedEmail);
+          const isStillActive = existingUser?.isPro && existingUser?.proExpiryDate
+            && Date.now() < new Date(existingUser.proExpiryDate).getTime();
+          // Legacy PRO ที่ไม่มี proExpiryDate = ให้ผ่าน (admin grant)
+          const isLegacyActivePro = existingUser?.isPro && !existingUser?.proExpiryDate;
+          if (isStillActive || isLegacyActivePro) {
+            return res.status(400).json({ ok: false, error: 'อีเมลนี้ยังเป็นสมาชิก PRO อยู่ ไม่สามารถชำระซ้ำได้' });
+          }
+        }
+        // -----------------------------------------------------------------
+
+        const slipAmount = data.data.amount;
+        const expectedAmount = parseFloat(amount);
+        if (slipAmount >= expectedAmount) {
+          // --- Save slip reference + email to prevent reuse ---
+          saveUsedSlip(transRef, email);
+          // -------------------------------------------
+
+          // --- ตั้ง proExpiryDate ตาม billingCycle ---
+          if (normalizedEmail) {
+            let proUser = usersStore.get(normalizedEmail);
+            if (!proUser) {
+              proUser = { email: normalizedEmail, name: normalizedEmail.split('@')[0], createdAt: Date.now() };
+            }
+            const daysToAdd = billingCycle === 'yearly' ? 365 : 30;
+            const expiryDate = new Date(Date.now() + daysToAdd * 24 * 60 * 60 * 1000).toISOString();
+            proUser.isPro = true;
+            proUser.proPlan = billingCycle === 'yearly' ? 'yearly' : 'monthly';
+            proUser.proExpiryDate = expiryDate;
+            proUser.proActivatedAt = new Date().toISOString();
+            delete proUser.proExpiredAt; // ล้าง flag เก่าถ้าต่ออายุ
+            usersStore.set(normalizedEmail, proUser);
+            saveUsers();
+            console.log(`👑 PRO activated → ${normalizedEmail} | plan: ${proUser.proPlan} | expires: ${expiryDate}`);
+          }
+          // ------------------------------------------
+
+          // --- LINE Notify Alert ---
+          const LINE_NOTIFY_TOKEN = process.env.LINE_NOTIFY_TOKEN || '';
+          if (LINE_NOTIFY_TOKEN) {
+            try {
+              const message = `\n🎉 มีผู้สมัคร PRO สำเร็จ!\n📧 อีเมล: ${email || 'ไม่ระบุ'}\n💰 ยอดเงิน: ฿${slipAmount}\n👑 แพ็กเกจ: ${billingCycle === 'yearly' ? 'รายปี (฿490)' : 'รายเดือน (฿49)'}`;
+              const params = new URLSearchParams();
+              params.append('message', message);
+              
+              await fetch('https://notify-api.line.me/api/notify', {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${LINE_NOTIFY_TOKEN}`,
+                  'Content-Type': 'application/x-www-form-urlencoded'
+                },
+                body: params
+              });
+            } catch (notifyErr) {
+              console.error('LINE Notify Error:', notifyErr);
+            }
+          }
+          // ------------------------
+
+          return res.json({ ok: true, message: 'ตรวจสอบสลิปสำเร็จ! บัญชีของคุณได้รับการอัปเกรดเป็น PRO แล้ว', amount: slipAmount });
+        } else {
+          return res.status(400).json({ ok: false, error: `ยอดเงินไม่ถูกต้อง (ต้องการ ฿${expectedAmount} แต่โอนมา ฿${slipAmount})` });
+        }
+      } finally {
+        processingSlips.delete(transRef);
+      }
     } else {
       const errorMsg = data.message || 'สลิปไม่ถูกต้อง หรือไม่พบข้อมูลสลิปนี้';
       return res.status(400).json({ ok: false, error: `SlipOK Error: ${errorMsg}` });
-    }
-
-    const expectedAmount = parseFloat(amount);
-    if (isSlipValid && slipAmount >= expectedAmount) {
-      // --- Save slip reference + email to prevent reuse ---
-      const transRef = data.data?.transRef || data.data?.qrCode || null;
-      if (transRef) saveUsedSlip(transRef, email);
-      // -------------------------------------------
-
-      // --- ตั้ง proExpiryDate ตาม billingCycle ---
-      const normalizedEmail = (email || '').toLowerCase().trim();
-      if (normalizedEmail) {
-        let proUser = usersStore.get(normalizedEmail);
-        if (!proUser) {
-          proUser = { email: normalizedEmail, name: normalizedEmail.split('@')[0], createdAt: Date.now() };
-        }
-        const daysToAdd = billingCycle === 'yearly' ? 365 : 30;
-        const expiryDate = new Date(Date.now() + daysToAdd * 24 * 60 * 60 * 1000).toISOString();
-        proUser.isPro = true;
-        proUser.proPlan = billingCycle === 'yearly' ? 'yearly' : 'monthly';
-        proUser.proExpiryDate = expiryDate;
-        proUser.proActivatedAt = new Date().toISOString();
-        delete proUser.proExpiredAt; // ล้าง flag เก่าถ้าต่ออายุ
-        usersStore.set(normalizedEmail, proUser);
-        saveUsers();
-        console.log(`👑 PRO activated → ${normalizedEmail} | plan: ${proUser.proPlan} | expires: ${expiryDate}`);
-      }
-      // ------------------------------------------
-
-      // --- LINE Notify Alert ---
-      const LINE_NOTIFY_TOKEN = process.env.LINE_NOTIFY_TOKEN || '';
-      if (LINE_NOTIFY_TOKEN) {
-        try {
-          const message = `\n🎉 มีผู้สมัคร PRO สำเร็จ!\n📧 อีเมล: ${email || 'ไม่ระบุ'}\n💰 ยอดเงิน: ฿${slipAmount}\n👑 แพ็กเกจ: ${billingCycle === 'yearly' ? 'รายปี (฿490)' : 'รายเดือน (฿49)'}`;
-          const params = new URLSearchParams();
-          params.append('message', message);
-          
-          await fetch('https://notify-api.line.me/api/notify', {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${LINE_NOTIFY_TOKEN}`,
-              'Content-Type': 'application/x-www-form-urlencoded'
-            },
-            body: params
-          });
-        } catch (notifyErr) {
-          console.error('LINE Notify Error:', notifyErr);
-        }
-      }
-      // ------------------------
-
-      return res.json({ ok: true, message: 'ตรวจสอบสลิปสำเร็จ! บัญชีของคุณได้รับการอัปเกรดเป็น PRO แล้ว', amount: slipAmount });
-    } else {
-      return res.status(400).json({ ok: false, error: `ยอดเงินไม่ถูกต้อง (ต้องการ ฿${expectedAmount} แต่โอนมา ฿${slipAmount})` });
     }
   } catch (error) {
     console.error('Slip Verification Error:', error);
