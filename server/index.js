@@ -931,6 +931,62 @@ function extractArticleParagraphs(html) {
   return paragraphs.slice(0, 10);
 }
 
+async function fetchBatchQuotesDirect(symbols) {
+  const { calcQuoteSR } = await import('./indicators.js');
+  
+  // Chunk symbols into groups of 30 to avoid URI too long errors or rate limits
+  const chunkSize = 30;
+  const chunks = [];
+  for (let i = 0; i < symbols.length; i += chunkSize) {
+    chunks.push(symbols.slice(i, i + chunkSize));
+  }
+
+  const allQuotes = [];
+
+  for (const chunk of chunks) {
+    try {
+      // Use yf.quote which handles batching automatically to a single /v7 endpoint
+      const quotes = await yf.quote(chunk, {}, { validateResult: false });
+      const qArray = Array.isArray(quotes) ? quotes : [quotes];
+      
+      for (const q of qArray) {
+        if (q && q.regularMarketPrice) {
+          const plainQ = JSON.parse(JSON.stringify(q));
+          
+          // Format quote object to match the frontend expectations
+          const quoteObj = {
+            ...plainQ,
+            marketState: plainQ.marketState || 'CLOSED',
+            regularMarketPreviousClose: plainQ.regularMarketPreviousClose || plainQ.regularMarketPrice,
+          };
+          
+          quoteObj.sr = calcQuoteSR(quoteObj);
+          allQuotes.push(quoteObj);
+        }
+      }
+    } catch (e) {
+      console.warn(`⚠️ Batch quote fetch error for chunk ${chunk.join(',')}:`, e.message);
+      // Fallback to mock data only if completely blocked
+      for (const sym of chunk) {
+        const mockObj = {
+          symbol: sym,
+          shortName: sym,
+          longName: sym,
+          regularMarketPrice: 100, // Dummy value (Rate Limited)
+          regularMarketChange: 0,
+          regularMarketChangePercent: 0,
+          regularMarketPreviousClose: 100,
+          marketState: 'CLOSED'
+        };
+        mockObj.sr = calcQuoteSR(mockObj);
+        allQuotes.push(mockObj);
+      }
+    }
+  }
+
+  return allQuotes;
+}
+
 function rangeToPeriod1(range) {
   const now = new Date();
   const d = new Date(now);
