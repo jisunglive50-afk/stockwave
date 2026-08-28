@@ -932,97 +932,21 @@ function extractArticleParagraphs(html) {
 }
 
 async function fetchBatchQuotesDirect(symbols) {
-  if (!symbols || symbols.length === 0) return [];
-  const { calcQuoteSR } = await import('./indicators.js');
-
-  const chunkSize = 30;
-  const chunks = [];
-  for (let i = 0; i < symbols.length; i += chunkSize) {
-    chunks.push(symbols.slice(i, i + chunkSize));
-  }
+  const symArr = (Array.isArray(symbols) ? symbols : symbols.split(',')).map(s => s.trim().toUpperCase()).filter(Boolean);
+  if (symArr.length === 0) return [];
 
   const allQuotes = [];
 
-  for (const chunk of chunks) {
-    const syms = chunk.join(',').toUpperCase();
-
-    // ── Strategy 1: Direct Yahoo v7/finance/quote with cookie+crumb ──
-    let gotData = false;
-    try {
-      const session = await getYahooSession();
-      const headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json',
-      };
-      if (session.cookie) headers['Cookie'] = session.cookie;
-      let url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(syms)}&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,regularMarketPreviousClose,regularMarketDayHigh,regularMarketDayLow,fiftyTwoWeekHigh,fiftyTwoWeekLow,marketCap,preMarketPrice,preMarketChange,preMarketChangePercent,postMarketPrice,postMarketChange,postMarketChangePercent,marketState,shortName,longName`;
-      if (session.crumb) url += `&crumb=${encodeURIComponent(session.crumb)}`;
-
-      const res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
-      if (res.ok) {
-        const data = await res.json();
-        const list = data?.quoteResponse?.result || [];
-        if (list.length > 0) {
-          for (const q of list) {
-            if (q && q.regularMarketPrice) {
-              const quoteObj = {
-                symbol: q.symbol,
-                shortName: q.shortName || q.longName || q.symbol,
-                longName: q.longName || q.shortName || q.symbol,
-                regularMarketPrice: +(q.regularMarketPrice || 0).toFixed(2),
-                regularMarketChange: +(q.regularMarketChange || 0).toFixed(2),
-                regularMarketChangePercent: +(q.regularMarketChangePercent || 0).toFixed(2),
-                regularMarketPreviousClose: +(q.regularMarketPreviousClose || q.regularMarketPrice || 0).toFixed(2),
-                regularMarketDayHigh: +(q.regularMarketDayHigh || q.regularMarketPrice * 1.01).toFixed(2),
-                regularMarketDayLow: +(q.regularMarketDayLow || q.regularMarketPrice * 0.99).toFixed(2),
-                fiftyTwoWeekHigh: q.fiftyTwoWeekHigh || null,
-                fiftyTwoWeekLow: q.fiftyTwoWeekLow || null,
-                marketCap: q.marketCap || null,
-                preMarketPrice: q.preMarketPrice ? +q.preMarketPrice.toFixed(2) : null,
-                preMarketChange: q.preMarketChange ? +q.preMarketChange.toFixed(2) : null,
-                preMarketChangePercent: q.preMarketChangePercent ? +q.preMarketChangePercent.toFixed(2) : null,
-                postMarketPrice: q.postMarketPrice ? +q.postMarketPrice.toFixed(2) : null,
-                postMarketChange: q.postMarketChange ? +q.postMarketChange.toFixed(2) : null,
-                postMarketChangePercent: q.postMarketChangePercent ? +q.postMarketChangePercent.toFixed(2) : null,
-                marketState: q.marketState || 'CLOSED',
-              };
-              quoteObj.sr = calcQuoteSR(quoteObj);
-              allQuotes.push(quoteObj);
-            }
-          }
-          gotData = list.length > 0;
-        }
-      }
-    } catch (e) {
-      console.warn(`⚠️ v7 batch fetch failed for ${syms}:`, e.message);
-    }
-
-    // ── Strategy 2: yahoo-finance2 library (if direct v7 failed) ──
-    if (!gotData) {
-      try {
-        const quotes = await yf.quote(chunk, {}, { validateResult: false });
-        const qArray = Array.isArray(quotes) ? quotes : [quotes];
-        for (const q of qArray) {
-          if (q && q.regularMarketPrice) {
-            const plainQ = JSON.parse(JSON.stringify(q));
-            plainQ.sr = calcQuoteSR(plainQ);
-            allQuotes.push(plainQ);
-            gotData = true;
-          }
-        }
-      } catch (e) {
-        console.warn(`⚠️ yf.quote batch failed for ${syms}:`, e.message);
-      }
-    }
-
-    // ── Strategy 3: Per-symbol chart endpoint (if batch failed) ──
-    if (!gotData) {
-      console.warn(`⚠️ All batch methods failed for chunk: ${syms}, falling back to per-symbol`);
-      const perSymbolResults = await Promise.allSettled(chunk.map(fetchSingleQuoteDirect));
-      for (const r of perSymbolResults) {
-        if (r.status === 'fulfilled' && r.value) {
-          allQuotes.push(r.value);
-        }
+  // ── Strategy 3: Per-symbol chart endpoint (v8) ──
+  // We MUST use fetchSingleQuoteDirect (v8 chart API) instead of v7 batch fetch
+  // because v7 quote API does NOT return real-time Overnight session prices and is often delayed.
+  // We process them in chunks of 10 to avoid overwhelming Yahoo
+  for (let i = 0; i < symArr.length; i += 10) {
+    const chunk = symArr.slice(i, i + 10);
+    const perSymbolResults = await Promise.allSettled(chunk.map(fetchSingleQuoteDirect));
+    for (const r of perSymbolResults) {
+      if (r.status === 'fulfilled' && r.value) {
+        allQuotes.push(r.value);
       }
     }
   }
