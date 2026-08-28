@@ -64,14 +64,17 @@ function calcExpectedMoveSR(sym, anchorPrice) {
   const fib618 = expectedMove * 0.618;
   const fib100 = expectedMove * 1.000;
 
-  const r1 = pivot + fib382;
-  const s1 = pivot - fib382;
+  // Helper function to round to nearest 0.50 (RocketTool Style)
+  const roundClean = (val) => Math.round(val * 2) / 2;
 
-  const r2 = pivot + fib618;
-  const s2 = pivot - fib618;
+  const r1 = roundClean(pivot + fib382);
+  const s1 = roundClean(pivot - fib382);
 
-  const r3 = pivot + fib100;
-  const s3 = pivot - fib100;
+  const r2 = roundClean(pivot + fib618);
+  const s2 = roundClean(pivot - fib618);
+
+  const r3 = roundClean(pivot + fib100);
+  const s3 = roundClean(pivot - fib100);
 
   return {
     pivot: +pivot.toFixed(2),
